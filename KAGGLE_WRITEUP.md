@@ -79,5 +79,5 @@ For the shopkeeper logging inventory without Wi-Fi, or the student summarizing p
 
 ## 8. Project Links
 *   **Public Code Repository:** [GitHub](https://github.com/AbhiKhrwl/Agent-Khrwal)
-*   **Live Demo / APK Release:** [Attached in Files]
-*   **Video Demo:** [Attached in Media Gallery]
+*   **Live Demo / APK Release:** [GitHub Releases](https://github.com/AbhiKhrwl/Agent-Khrwal/releases)
+*   **Video Demo:** [YouTube](https://youtu.be/sx3kzZp7tuU)

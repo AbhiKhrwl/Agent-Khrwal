@@ -154,7 +154,7 @@ User Input → Context Optimization (7-layer pipeline) → Gemma 4 Inference
 
 | Track | How Agent Kharwal Qualifies |
 |-------|----------------------------|
-| **Main Track** | Full autonomous agent with 10,755 LOC, novel architecture |
+| **Main Track** | Full autonomous agent with 11,000+ LOC, novel architecture |
 | **Digital Equity & Inclusivity** | Zero-cost, offline, Hindi/Hinglish voice, shopkeeper ledger mode |
 | **Future of Education** | Free AI tutor for students without internet access |
 | **Safety & Trust** | Omega Fortress: 3-tier security + transparent Activity Log |

@@ -14,7 +14,7 @@ Shattering the "Cloud Ceiling" — bringing enterprise-grade agentic tool execut
 
 ## 1. The Story: Breaking the Cloud Ceiling
 
-In 12 days, with limited internet and zero cloud budget, a solo developer set out to prove that frontier AI doesn't require the cloud. The result: **Agent Kharwal** — 10,755 lines of production Dart code that transforms a ₹12,000 Android phone into an autonomous AI workstation.
+In 12 days, with limited internet and zero cloud budget, a solo developer set out to prove that frontier AI doesn't require the cloud. The result: **Agent Kharwal** — 11,000+ lines of production Dart code that transforms a ₹12,000 Android phone into an autonomous AI workstation.
 
 The motivation came from a simple observation: AI is advancing at lightspeed, but the communities that could benefit the most are being left behind. India alone has **63 million micro-retailers** (KPMG 2023) and **250 million students** (Ministry of Education). For a shopkeeper in a small town who barely uses a smartphone, or a student in a rural classroom with spotty connectivity, cloud-based AI is inaccessible. It demands expensive data plans, constant internet, and forces sensitive business records onto remote servers.
 
@@ -26,7 +26,7 @@ Agent Kharwal is not a chatbot — it is a **fully autonomous, multi-tool agent*
 
 **Presentation Layer** — The `GajrajOracleScaffold` provides a premium chat interface with animated `ToolCard` widgets that update in-place (Running → Done), a `SandboxExplorer` ("The Vault") for transparent file browsing, and an `ActivityDrawer` audit log.
 
-**Orchestration Layer (AetherCore — 1,514 lines)** — The autonomous control loop (`_runInternalPulse`) that enables multi-turn task completion. When a user says "create a project folder with a README," the agent calls `mkdir -p`, then `file_write`, then verifies — all without user intervention. This `while(true)` loop is the fundamental difference between a chatbot and an agent.
+**Orchestration Layer (AetherCore — 1,662 lines)** — The autonomous control loop (`_runInternalPulse`) that enables multi-turn task completion. When a user says "create a project folder with a README," the agent calls `mkdir -p`, then `file_write`, then verifies — all without user intervention. This `while(true)` loop is the fundamental difference between a chatbot and an agent.
 
 **Execution Layer** — The `AgentRouter` dispatches tool requests with ordered batch execution (adjacent safe tools run in parallel, unsafe tools run sequentially). A fuzzy name matcher (`_findClosestTool`) handles hallucinated tool names with "Did you mean?" suggestions.
 
@@ -35,7 +35,7 @@ Agent Kharwal is not a chatbot — it is a **fully autonomous, multi-tool agent*
 - `PathJailer`: Symlink-aware directory traversal prevention. Canonicalizes all paths and validates they remain within the sandbox boundary.
 - `SpectralOps`: Sandboxed shell with 15-second timeout, 50-PID cap, environment scrubbing (no host secrets), and infinite loop detection (>90% duplicate output lines → SIGKILL).
 
-**Inference Engine (LocalInferenceService — 838 lines)** — Wraps `flutter_gemma` ^0.15.1 with a global engine Mutex (LiteRT-LM is strictly single-threaded), a 3-tier GPU→CPU fallback chain, and a 60-second stream inactivity watchdog.
+**Inference Engine (LocalInferenceService — 809 lines)** — Wraps `flutter_gemma` ^0.15.1 with a global engine Mutex (LiteRT-LM is strictly single-threaded), a 3-tier GPU→CPU fallback chain, and a 60-second stream inactivity watchdog.
 
 ## 3. How Gemma 4 Is Specifically Used
 

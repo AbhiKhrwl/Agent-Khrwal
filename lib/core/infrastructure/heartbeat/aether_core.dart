@@ -1476,8 +1476,10 @@ class AetherCore {
 
     // Estimate tokens (rough: 1 token ≈ 4 chars for English)
     final estimatedTokens = _estimateTokens(history);
-    // E2B model has 32K context. Compact when we reach ~20K estimated tokens.
-    if (estimatedTokens < 20000) return;
+    // E2B model supports 32K context natively, BUT for safe on-device GPU inference, 
+    // the KV cache is capped at 8192 tokens (in local_inference_service.dart).
+    // So we must compact when we reach ~6000 estimated tokens.
+    if (estimatedTokens < 6000) return;
 
     logger.d('🔱 [AutoCompact] Triggered: ~$estimatedTokens tokens, ${history.length} messages');
 

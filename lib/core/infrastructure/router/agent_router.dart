@@ -270,7 +270,8 @@ class AgentRouter {
       final nameLower = name.toLowerCase();
       // Score: count shared characters (simple but effective for short names)
       int score = 0;
-      for (final char in lower.split('')) {
+      final uniqueChars = lower.split('').toSet();
+      for (final char in uniqueChars) {
         if (nameLower.contains(char)) score++;
       }
       // Bonus for substring match

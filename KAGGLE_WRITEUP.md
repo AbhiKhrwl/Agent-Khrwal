@@ -37,6 +37,8 @@ Agent Kharwal is not a chatbot — it is a **fully autonomous, multi-tool agent*
 
 **Inference Engine (LocalInferenceService — 838 lines)** — Wraps `flutter_gemma` ^0.15.1 with a global engine Mutex (LiteRT-LM is strictly single-threaded), a 3-tier GPU→CPU fallback chain, and a 60-second stream inactivity watchdog.
 
+**Decoupled CLI & Headless Compatibility (Clean Separation)** — Crucially, the entire agentic core logic—including `AetherCore`, `CipherProtocol`, `AgentRouter`, and the safety filters (`SentryPurity`, `PathJailer`, `SpectralOps`)—is designed with strict separation of concerns. It is **100% decoupled from the Flutter UI layer**. This allows Agent Kharwal's entire engine to run as a headless CLI agent via pure Dart terminal commands, automated shell scripts, or headless test runners (such as our custom CLI test harness `demo_scenario_test.dart`). This cross-platform terminal compatibility opens up local automation opportunities to developer workstations, Raspberry Pis, and resource-constrained edge servers, without requiring any graphical overhead.
+
 ## 3. How Gemma 4 Is Specifically Used
 
 **Native Function Calling**: Tools are registered via `createChat(tools: [...])` using the `gemma.Tool` constructor. The model emits `<|tool_call|>` tokens that the SDK surfaces as `FunctionCallResponse` objects, mapped to our typed `ToolCallEvent` sealed class.

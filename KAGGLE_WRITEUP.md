@@ -53,11 +53,17 @@ Cloud agents (with 200B+ parameters) don't need these. We invented them because 
 
 **The Withholding Pattern**: Recoverable errors are *silently retried* without any UI feedback. The user sees only "Thinking..." while AetherCore runs exponential backoff (500ms → 8s cap, ±20% jitter). Error messages surface **only** after all retries fail — replicating the seamless UX of cloud models on local hardware.
 
+**Streaming Mid-Stream Tool Executor**: Most agents — including cloud ones — wait for the model to finish generating before executing tools. Agent Kharwal starts executing I/O-bound tools **mid-stream**, while the model is still producing tokens. By the time the response finishes, tool results are already ready. This parallel execution pattern (`streamingFutures[toolId] = router.executeSingleTool(request)`) delivers latency savings that even cloud agents don't implement.
+
+**Progress-Aware Completion Intelligence**: A user might give 5 tasks in one prompt. Naive agents stop after the first success. AetherCore tracks every unique tool operation fingerprint across the session using set intersection (`turnFingerprints.difference(_seenToolOps)`). New operations = making progress → continue. Zero new operations for 2 consecutive turns = spinning in place → hard stop. This prevents both premature exit and infinite loops.
+
+**Infinite Memory via AI Self-Summarization**: Gemma 4 E2B has a 32K context window. When history exceeds ~20K estimated tokens, AetherCore calls the model itself to summarize aging messages into bullet points, then replaces them — giving the agent theoretically unlimited conversation length despite the hardware limit. A circuit breaker (max 3 failures) prevents degradation.
+
 **Adaptive Turn Depth**: Simple tasks ("list files") get 8 turns; complex tasks ("build a project") get 25. Cloud agents can afford unlimited turns, but on-device, every turn drains battery.
 
 **Sandbox Awareness Injection**: Every 3 turns, a lightweight `ls -la` snapshot is injected into history. 2B models "forget" directory contents between turns; this prevents hallucinating missing files.
 
-**7-Layer Context Pipeline**: Before every model call, history passes through MicroCompact (HEAD+TAIL truncation at 2000 chars), system message compaction, sandbox injection, AI-powered summarization (at >20K tokens), audio/thinking stripping, and pair-aware trimming (never splits a tool call from its result).
+**Error-Specific Self-Correction**: Instead of generic "fix and retry," the system parses the exact error type and injects targeted instructions: "No such file → use `ls` first," "Permission denied → use relative paths," "Command not found → here are the available commands." A 2B model needs surgical guidance, not vague nudges.
 
 ## 5. Shopkeeper Ledger Mode
 

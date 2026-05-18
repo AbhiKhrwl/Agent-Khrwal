@@ -1,0 +1,57 @@
+# APEX LITE: TECHNICAL CHALLENGES & SOLUTIONS (HACKATHON LOG)
+
+1. PROBLEM: Process Leaks & Orphan Zombies (SIGTERM Bug)
+   SYMPTOM: When a shell command timed out, it was killed but its child processes (e.g., a long-running python script) kept running, eating CPU/RAM.
+   SOLUTION: Implemented a recursive 'Tree Kill' in ProcessUtils. On POSIX, we now signal the entire process group with SIGTERM, wait for a grace period, and then escalate to SIGKILL. This ensures a clean sandbox after every operation.
+
+2. PROBLEM: LLM Hallucination in Small Models (Gemma 2B)
+   SYMPTOM: Smaller models often generate malformed XML tool tags (missing closing tags or incorrect syntax) when under pressure.
+   SOLUTION: Created AetherCore's "Self-Healing Loop". CipherProtocol detects malformed tags mid-stream. If no valid tool call is parsed but malformed tags exist, the system automatically injects a [RECOVERY] prompt back into the context. This forces the model to self-correct without user intervention.
+
+3. PROBLEM: UI Freezing during Local Inference
+   SYMPTOM: Running Gemma locally is CPU intensive, causing the Flutter UI thread to stutter.
+   SOLUTION: Implemented an event-driven stream architecture. Model output is si(e)ved chunk-by-chunk in a non-blocking way, and events (thought, chunk, status) are pushed to the UI via a broadcast stream, keeping the terminal responsive.
+
+4. PROBLEM: Sandbox Security (Path Escape)
+   SYMPTOM: A hallucinating AI could try to run 'cat /etc/passwd' or 'rm -rf ~'.
+   SOLUTION: Developed PathJailer. Every path mentioned in a tool call is normalized, canonicalized, and checked against a strictly enforced sandbox root. Symlinks are resolved to prevent escape.
+
+5. PROBLEM: Performance Monitoring on Mid-range Devices
+   SYMPTOM: Users need to know why the AI is taking time.
+   SOLUTION: Built-in latency tracking and TTFP (Time to First Token) monitoring in AetherCore. This data is emitted to the UI to manage user expectations during local execution.
+
+- Fixed `RenderFlex overflowed by 11 pixels on the bottom` error during text streaming by moving the `StreamingBubble` inside the `ListView.builder` (increasing `itemCount` conditionally) so that it can scroll naturally with the chat.
+
+--- Image Handling Supreme Upgrade (2026-05-11) ---
+
+- Fixed: Image was auto-submitting to model on pick with no way to type a prompt.
+  → Now uses WhatsApp-style flow: pick → preview in input bar → type prompt → send together.
+
+- Fixed: `clEnqueueMapBuffer failed with: -14` and `vision_litert_compiled_model_executor` GPU crash.
+  → Root cause: 900x1600 image = 2376 visual patches = exceeds A34 GPU OpenCL buffer.
+  → Fix: Pre-resize to ≤512px max dimension (lossless PNG) before sending to model = ~280 patches.
+
+- Fixed: GPU fallback was permanent after 1 failure.
+  → Now: 1 GPU try per prompt (zero latency waste), CPU fallback if fails.
+  → If 3 consecutive prompts fail on GPU → permanent CPU for session.
+  → If GPU succeeds at any point → failure counter resets.
+
+- Fixed: AetherCore was sending image file path as message content to the model.
+  → Now correctly extracts user's typed prompt as content, file path as imagePath.
+
+--- Image Not Reaching Model + Duplicate Bubble Fix (2026-05-11 19:15) ---
+
+- Fixed: Image bytes were silently dropped by the model. Model said "Please provide an image".
+  → Root cause: FlutterGemma.getActiveModel() CACHES the model instance.
+  → First call was text-only "Hi" with supportImage=false.
+  → Cached model was reused for image messages → max_num_images: 0 → VisionExecutorSettings: Not set.
+  → Fix: Always pass supportImage=true, maxNumImages=1. Gemma 4 is multimodal, always enable vision.
+
+- Fixed: Two chat bubbles appearing for image+text messages (image in one, prompt in another).
+  → Root cause: _handleSend() added 'user_image' to _chatData, then AetherCore also emitted 'user' event.
+  → Fix: AetherCore is now the single source of truth. It emits 'user_image' for image inputs.
+  → _handleSend() no longer adds to _chatData for images.
+
+- Key insight from flutter_gemma 0.15.0 source code (ffi_inference_model.dart:237):
+  → FfiInferenceModelSession stores _pendingImage ONLY if supportImage=true.
+  → If supportImage=false, imageBytes are silently discarded even if Message.withImage() is used.

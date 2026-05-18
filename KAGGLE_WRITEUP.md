@@ -37,8 +37,6 @@ Agent Kharwal is not a chatbot — it is a **fully autonomous, multi-tool agent*
 
 **Inference Engine (LocalInferenceService — 838 lines)** — Wraps `flutter_gemma` ^0.15.1 with a global engine Mutex (LiteRT-LM is strictly single-threaded), a 3-tier GPU→CPU fallback chain, and a 60-second stream inactivity watchdog.
 
-**Decoupled CLI & Headless Compatibility (Clean Separation)** — Crucially, the entire agentic core logic—including `AetherCore`, `CipherProtocol`, `AgentRouter`, and the safety filters (`SentryPurity`, `PathJailer`, `SpectralOps`)—is designed with strict separation of concerns. It is **100% decoupled from the Flutter UI layer**. This allows Agent Kharwal's entire engine to run as a headless CLI agent via pure Dart terminal commands, automated shell scripts, or headless test runners (such as our custom CLI test harness `demo_scenario_test.dart`). This cross-platform terminal compatibility opens up local automation opportunities to developer workstations, Raspberry Pis, and resource-constrained edge servers, without requiring any graphical overhead.
-
 ## 3. How Gemma 4 Is Specifically Used
 
 **Native Function Calling**: Tools are registered via `createChat(tools: [...])` using the `gemma.Tool` constructor. The model emits `<|tool_call|>` tokens that the SDK surfaces as `FunctionCallResponse` objects, mapped to our typed `ToolCallEvent` sealed class.
@@ -73,9 +71,15 @@ We subjected Agent Kharwal to adversarial attacks:
 - **Payload Injection**: `$((i+1))` arithmetic → SentryPurity caught the `$(` pattern, blocked before shell invocation.
 - **Retry Loop Drain**: The agent retried 5 variations → Adaptive Turn Depth Limit severed the loop, preserving battery.
 
-## 7. Impact & Future
+## 7. Impact & Future: Beyond Mobile — A Universal Agentic Runtime
 
 For the shopkeeper logging inventory without Wi-Fi, or the student summarizing physics notes at 2 AM in airplane mode, Agent Kharwal provides absolute privacy, zero latency, and 100% uptime. By pushing Gemma 4 E2B to its limits with rigorous system architecture, we prove that the developing world does not need the cloud to harness autonomous intelligence.
+
+**Cross-Platform by Design**: Agent Kharwal is not locked to Android. The entire agentic core — AetherCore's autonomous loop, the security triad (SentryPurity, PathJailer, SpectralOps), all 7 tools, and the context management pipeline — is written in pure Dart with zero platform-specific dependencies. The architecture compiles natively to **macOS, Linux, and Windows** via Flutter's desktop targets, turning any laptop into a fully offline AI workstation. The same BashTool that creates files on an Android sandbox executes identically on a macOS terminal or a Linux server.
+
+**CLI-Ready Architecture**: Because the orchestration layer (AetherCore) is decoupled from the presentation layer, the agentic brain can operate headlessly — receiving text input and streaming tool executions via stdout, making it viable as a **CLI agent** for developers who prefer terminal workflows. This means a single codebase powers both a polished mobile GUI for non-technical users *and* a potential command-line interface for power users — the same Gemma 4 intelligence, the same security guarantees, on every form factor.
+
+**The Vision**: One 2B model. One codebase. Every device. From a ₹12,000 Android phone in Nagaur to a developer's MacBook in Bangalore — autonomous AI that respects your privacy, works without internet, and costs nothing.
 
 ---
 

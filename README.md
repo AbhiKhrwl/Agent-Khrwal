@@ -24,10 +24,9 @@ A student in a government school can't afford GPT-4. A shopkeeper in a small tow
 
 ## ✨ Key Features
 
-### Dual-Mode & Headless CLI Execution
+### Dual-Mode AI
 - **Just Talk** — Clean chat interface for homework help, writing, brainstorming
 - **Let's Do** — Full autonomous agent with shell commands, file operations, and self-correction
-- **Headless CLI Mode** — The entire orchestration and security core is 100% decoupled from the UI, allowing it to run natively via headless shell scripts and automated Dart CLI environments (e.g., automated test runners like `demo_scenario_test.dart`) for servers and development workstations.
 
 ### Agentic Tool Execution (7 Tools)
 - 🖥️ **BashTool** — Execute shell commands in a hardened sandbox (SpectralOps)

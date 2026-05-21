@@ -22,10 +22,14 @@ class KharwalBehavior {
   /// [isAgentMode] — LetsDo mode gets tool guidance, JustTalk doesn't
   /// [cwd] — Current working directory for context awareness
   /// [toolNames] — Available tool names for self-correction guidance
+  /// [isCli] — If true, adjusts context for desktop CLI with cloud inference
+  /// [modelName] — Optional model name to display in context (e.g., 'gemini-2.5-flash')
   static String build({
     required bool isAgentMode,
     required String cwd,
     List<String> toolNames = const [],
+    bool isCli = false,
+    String? modelName,
   }) {
     final sections = <String>[
       _coreIdentity,
@@ -33,7 +37,7 @@ class KharwalBehavior {
       if (isAgentMode) _workingStyle,
       if (isAgentMode && toolNames.isNotEmpty) _toolGuidance(toolNames),
       _outputStyle,
-      _contextInfo(cwd, isAgentMode),
+      _contextInfo(cwd, isAgentMode, isCli: isCli, modelName: modelName),
     ];
     return sections.join('\n\n');
   }
@@ -123,9 +127,9 @@ When the user sends voice input (transcribed text from speech):
 - Treat voice input EXACTLY the same as typed text — same intelligence, same context detection.''';
 
   // ─── Section 6: Where are you? ──────────────────────────────
-  static String _contextInfo(String cwd, bool isAgent) => '''ENVIRONMENT:
+  static String _contextInfo(String cwd, bool isAgent, {bool isCli = false, String? modelName}) => '''ENVIRONMENT:
 - Working directory: $cwd
-- Platform: Android (on-device, no internet)
-- Model: Gemma 4 (2B, local inference)
-- Context window: Limited. Be concise with outputs.${isAgent ? '\n- Mode: Agent (autonomous tool execution enabled)' : '\n- Mode: Chat (conversation only)'}''';
+- Platform: ${isCli ? 'Desktop (CLI mode, internet available)' : 'Android (on-device, no internet)'}
+- Model: ${modelName ?? 'Gemma 4 (2B, local inference)'}
+- Context window: ${isCli ? 'Large. You can give detailed, thorough responses.' : 'Limited. Be concise with outputs.'}${isAgent ? '\n- Mode: Agent (autonomous tool execution enabled)' : '\n- Mode: Chat (conversation only)'}''';
 }

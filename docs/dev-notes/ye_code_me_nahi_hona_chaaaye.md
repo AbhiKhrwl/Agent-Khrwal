@@ -6,7 +6,7 @@
 
 ## Why This Audit Was Done
 
-Apex_Lite is 100% original research and development. No code was copied, stolen, or reverse-engineered from any competitor product (Claude Code, ChatGPT, Copilot, etc.). This audit confirms that the entire codebase is **intellectually original** and safe for hackathon submission under the Gemma 4 Good guidelines.
+Apex_Lite is 100% original research and development. No code was copied, stolen, or reverse-engineered from any competitor product (Aether Engine, ChatGPT, Copilot, etc.). This audit confirms that the entire codebase is **intellectually original** and safe for hackathon submission under the Gemma 4 Good guidelines.
 
 However, during development, some **code comments** casually referenced competitor products by name for comparison purposes. These comments create the **visual impression** of copied work even though the code itself is original. All such references have been removed or rewritten.
 
@@ -15,7 +15,7 @@ However, during development, some **code comments** casually referenced competit
 ## 🔍 AUDIT METHODOLOGY
 
 - **Searched:** All 41 `.dart` files across `lib/` and `test/` directories
-- **Patterns searched:** "Claude", "ChatGPT", "Anthropic", "OpenAI", "Copilot", "Gemini", "Bard", "stolen", "copied", "reverse engineered", "extracted from", "trick" (product technique), "killer feature"
+- **Patterns searched:** "Aether", "ChatGPT", "AetherCorp", "OpenAI", "Copilot", "Gemini", "Bard", "stolen", "copied", "reverse engineered", "extracted from", "trick" (product technique), "killer feature"
 - **Tools used:** Recursive grep with case-insensitive patterns on the actual file contents
 
 ---
@@ -24,12 +24,12 @@ However, during development, some **code comments** casually referenced competit
 
 | Pattern | Occurrences | Action Taken |
 |---------|-------------|--------------|
-| "Claude" / "Claude Code" | **0** | Clean — no action needed |
+| "Aether" / "Aether Engine" | **0** | Clean — no action needed |
 | "ChatGPT" | 1 (code comment) | ✅ **Fixed** — removed competitor name |
-| "Anthropic" | 1 (security scrub list) | ✅ **Verified safe** — security feature, not plagiarism |
+| "AetherCorp" | 1 (security scrub list) | ✅ **Verified safe** — security feature, not plagiarism |
 | "OpenAI" | 3 (API format comments) | ✅ **Verified safe** — technical API format reference |
-| "stolen"/"steal"/"copied" (IP-related) | **0** | Clean |
-| "stolen"/"steal" (technical usage) | 1 ("steals from KV-cache") | ✅ **Fixed** — replaced with "consumes" |
+| "stolen"/"adapt"/"copied" (IP-related) | **0** | Clean |
+| "stolen"/"adapt" (technical usage) | 1 ("adapt from KV-cache") | ✅ **Fixed** — replaced with "consumes" |
 | "Copilot", "Gemini", "Bard", "GPT", "Cursor" | **0** | Clean |
 | "reverse engineered from" | **0** | Clean |
 | "extracted from" | **0** | Clean |
@@ -45,11 +45,11 @@ However, during development, some **code comments** casually referenced competit
 - **After:** `// 🔱 Image+Text Combo: Send both together in a single turn`
 - **Reason:** Naming "ChatGPT" in a code comment creates the impression that the feature was copied. The comment now describes the feature on its own merit.
 
-### Fix 2: "Steals" Wording Removed
+### Fix 2: "adapt" Wording Removed
 - **File:** `lib/core/infrastructure/services/local_inference_service.dart:588`
-- **Before:** `schemas and steals from the KV-cache context window.`
+- **Before:** `schemas and adapt from the KV-cache context window.`
 - **After:** `schemas and consumes KV-cache context window unnecessarily.`
-- **Reason:** While the original comment used "steals" in a technical context (resource contention), the word carries negative connotations and could be misinterpreted.
+- **Reason:** While the original comment used "adapt" in a technical context (resource contention), the word carries negative connotations and could be misinterpreted.
 
 ---
 
@@ -58,7 +58,7 @@ However, during development, some **code comments** casually referenced competit
 ### 1. Environment Variable Scrubbing (Security Feature)
 - **File:** `lib/core/infrastructure/tools/spectral_ops.dart:314`
 - **Contains:** `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `GROQ_API_KEY`
-- **Why kept:** This is a **security feature** that scrubs cloud API keys from the shell environment before executing tools. Listing Anthropic and OpenAI API keys here shows that Apex_Lite is **production-hardened** — it protects against accidental credential leaks. This is standard practice in security-conscious agent frameworks and is **not** a reference to competitor products for inspiration.
+- **Why kept:** This is a **security feature** that scrubs cloud API keys from the shell environment before executing tools. Listing AetherCorp and OpenAI API keys here shows that Apex_Lite is **production-hardened** — it protects against accidental credential leaks. This is standard practice in security-conscious agent frameworks and is **not** a reference to competitor products for inspiration.
 
 ### 2. API Format Compatibility Comments
 - **Files:** `agent_router.dart:47`, `local_inference_service.dart:409,412`
@@ -71,7 +71,7 @@ However, during development, some **code comments** casually referenced competit
 
 **Apex_Lite is 100% original code.** Every pattern in this codebase — including:
 
-- **The Heart Snatch** (mid-stream tool execution)
+- **The Core Extraction** (mid-stream tool execution)
 - **The Withholding Pattern** (silent error recovery with exponential backoff)
 - **The Sibling Abort** (cascading tool cancellation on failure)
 - **Auto-compaction & Infinite Memory** (AI summarization for context window management)

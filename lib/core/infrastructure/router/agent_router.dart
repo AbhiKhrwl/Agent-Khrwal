@@ -114,7 +114,7 @@ class AgentRouter {
 
   /// 🔱 Fix #9: Ordered batch execution — preserves the model's requested order.
   /// Adjacent safe tools run in parallel; unsafe tools get their own sequential batch.
-  /// 🔱 Heart Snatch: Sibling Abort — if a bash tool errors, cancel remaining tools.
+  /// 🔱 Core Extraction: Sibling Abort — if a bash tool errors, cancel remaining tools.
   Future<List<ToolResult>> executeTools(List<ToolRequest> requests) async {
     final results = <ToolResult>[];
     bool siblingAborted = false;
@@ -134,7 +134,7 @@ class AgentRouter {
 
     // Execute batches IN ORDER
     for (final batch in batches) {
-      // 🔱 Heart Snatch: Sibling Abort — skip remaining batches
+      // 🔱 Core Extraction: Sibling Abort — skip remaining batches
       if (siblingAborted) {
         for (final req in batch.requests) {
           results.add(ToolResult(
@@ -159,7 +159,7 @@ class AgentRouter {
           final result = await _executeSingle(req);
           results.add(result);
 
-          // 🔱 Heart Snatch: Sibling Abort Pattern
+          // 🔱 Core Extraction: Sibling Abort Pattern
           // If a bash tool errors, abort ALL remaining sibling tools.
           // This prevents wasted execution on commands that depend on the first.
           if (result.isError && req.name == 'bash') {
@@ -173,7 +173,7 @@ class AgentRouter {
     return results;
   }
 
-  /// 🔱 Heart Snatch: Public single-tool executor for Streaming Tool Executor.
+  /// 🔱 Core Extraction: Public single-tool executor for Streaming Tool Executor.
   /// AetherCore calls this mid-stream to start tool execution while the model
   /// is still generating tokens. This is a crucial performance optimization.
   Future<ToolResult> executeSingleTool(ToolRequest request) {

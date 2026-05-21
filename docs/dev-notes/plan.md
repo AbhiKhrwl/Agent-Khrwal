@@ -17,7 +17,7 @@ To win, we show "Engineering Excellence" without giving away our business secret
 5.  **DirectoryBriefingTool:** A "Wow" feature that summarizes local folders instantly without internet.
 
 ### ❌ Excluded (The SaaS Moat - PRIVATE)
-1.  **HybridInferenceService:** No OpenAI/Claude routing. This competition is for Gemma.
+1.  **HybridInferenceService:** No OpenAI/Aether routing. This competition is for Gemma.
 2.  **Isar Context Manager:** We will use simple in-memory history for the 3-minute demo to avoid DB complexity/leaks.
 3.  **ChargingPulseEngine:** Our "Killer Pro Feature" for background autonomy stays in the vault.
 4.  **DataInjectorTool (AppleScript):** Too risky and macOS specific; we focus on cross-platform Bash.

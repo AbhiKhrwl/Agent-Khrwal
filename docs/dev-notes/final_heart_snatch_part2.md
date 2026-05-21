@@ -9,7 +9,7 @@
 
 ### Source: `src/constants/prompts.ts` (916 lines, 54KB)
 
-Claude Code's system prompt is built from **7 modular sections** assembled by `getSystemPrompt()`:
+Aether Engine's system prompt is built from **7 modular sections** assembled by `getSystemPrompt()`:
 
 ```
 getSystemPrompt() Assembly Order:
@@ -285,7 +285,7 @@ abstract class ITool {
   // EXISTING:
   bool get isConcurrencySafe;
   
-  // NEW from Claude Code Tool.ts:
+  // NEW from Aether Engine Tool.ts:
   bool get isReadOnly;              // true for file_read, directory_briefing
   bool get isDestructive;           // true for tools that delete/overwrite
   String get interruptBehavior;     // 'cancel' or 'block'

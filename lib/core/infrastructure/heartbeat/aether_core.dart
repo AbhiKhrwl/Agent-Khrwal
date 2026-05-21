@@ -11,7 +11,6 @@ import '../../domain/interfaces/i_input_adapter.dart';
 import '../handshake/cipher_protocol.dart';
 import '../router/agent_router.dart';
 import '../../domain/entities/input_event.dart';
-import '../services/local_inference_service.dart';
 import '../services/id_service.dart';
 
 /// 🔱 Supreme Fix 1: Random jitter source for exponential backoff.
@@ -25,6 +24,24 @@ class AetherCore {
   final logger = Logger();
 
   ChatMode chatMode;
+
+  /// Known fatal engine errors that should NOT be retried
+  static const _fatalErrorPatterns = [
+    'Failed to allocate tensors',
+    'Failed to invoke the compiled model',
+    'DYNAMIC_UPDATE_SLICE',
+    'SizeOfDimension',
+    'SIGSEGV',          // 🔱 Research: native memory access violation
+    'FAILED_PRECONDITION', // 🔱 Research: concurrent conversation on single engine
+    'Failed to initialize miniaudio decoder', // 🔱 Research: unsupported audio format
+  ];
+
+  /// Check if an error string indicates a fatal, non-recoverable engine failure
+  static bool isFatalEngineError(String errorText) {
+    return _fatalErrorPatterns.any(
+      (pattern) => errorText.contains(pattern),
+    );
+  }
 
   // 🔱 SUPREME UPGRADE: Progress-Aware Completion Intelligence
   int _consecutiveDenials = 0;         // Denial hard-stop counter
@@ -68,7 +85,7 @@ class AetherCore {
     this.chatMode = ChatMode.justTalk,
   });
 
-  // 🔱 Heart Snatch: SESSION TELEMETRY
+  // 🔱 Core Extraction: SESSION TELEMETRY
   // Track performance across the entire session for dashboard/judges.
   int _sessionTotalTokens = 0;
   int _sessionTotalTurns = 0;
@@ -259,7 +276,7 @@ class AetherCore {
           await _injectSandboxContext(history);
         }
 
-        // 🔱 Heart Snatch: AUTO-COMPACT / AI SUMMARIZATION
+        // 🔱 Core Extraction: AUTO-COMPACT / AI SUMMARIZATION
         // 🔱 Infinite Memory Architecture: when context grows too large,
         // use the model itself to summarize old messages. This keeps the
         // context window lean while preserving all critical information.
@@ -268,7 +285,7 @@ class AetherCore {
         // 🥁 Strip audio from history BEFORE each model call — prevents
         // re-sending audio on retries and keeps token count within limits.
         _stripAudioFromHistory(history);
-        // 🔱 Heart Snatch: Strip thinking traces from history too
+        // 🔱 Core Extraction: Strip thinking traces from history too
         _stripThinkingFromHistory(history);
         _trimHistory(history);
 
@@ -277,7 +294,7 @@ class AetherCore {
         String assistantFullText = '';
         List<ToolRequest> pendingRequests = [];
 
-        // 🔱 Heart Snatch: Streaming Tool Executor futures.
+        // 🔱 Core Extraction: Streaming Tool Executor futures.
         // Tools start executing IMMEDIATELY when detected mid-stream,
         // not after the entire stream finishes. This is a critical performance feature.
         final Map<String, Future<ToolResult>> streamingFutures = {};
@@ -331,7 +348,7 @@ class AetherCore {
               'is_read_only': isReadOnly,
             });
 
-            // 🔱 Heart Snatch: STREAMING TOOL EXECUTOR
+            // 🔱 Core Extraction: STREAMING TOOL EXECUTOR
             // Start executing the tool IMMEDIATELY while model continues streaming.
             // When the stream finishes, results are already ready (or nearly ready).
             // 🔱 Mid-Stream Execution: drastically reduces latency by starting I/O-bound tools early.
@@ -348,6 +365,7 @@ class AetherCore {
               logger.d('🔱 [StreamExec] Started ${event.name} mid-stream (id: $toolId)');
             }
           } else if (event is FatalErrorEvent) {
+            consecutiveErrors = maxRetries; // Prevent empty response retry
             _eventController.add({
               'type': 'fatal_error',
               'data': event.message,
@@ -361,7 +379,7 @@ class AetherCore {
               'data': event.message,
             });
           } else if (event is RecoverableErrorEvent) {
-            // 🔱 Heart Snatch: WITHHOLDING PATTERN
+            // 🔱 Core Extraction: WITHHOLDING PATTERN
             // Recoverable errors are SILENTLY retried. NO UI feedback.
             // User sees only "Thinking..." — never "Retrying...", never "Stream error".
             // If ALL retries fail, THEN surface the error.
@@ -370,14 +388,14 @@ class AetherCore {
             recoverable = true;
             break;
           } else if (event is StreamTimeoutEvent) {
-            // 🔱 Heart Snatch: Withheld too — silent retry.
+            // 🔱 Core Extraction: Withheld too — silent retry.
             logger.w('🔱 [Withhold] StreamTimeout: ${event.message}');
             recoverable = true;
             break;
           }
         }
         stopwatch.stop();
-        // 🔱 Heart Snatch: TURN TELEMETRY
+        // 🔱 Core Extraction: TURN TELEMETRY
         // Track tokens/sec and cumulative stats for session dashboard.
         final latencyMs = stopwatch.elapsedMilliseconds;
         final tokensPerSec = latencyMs > 0
@@ -396,7 +414,7 @@ class AetherCore {
         });
 
         if (_cancelRequested) {
-          // 🔱 Heart Snatch: CANCEL-SAFE STREAMING FUTURE CLEANUP
+          // 🔱 Core Extraction: CANCEL-SAFE STREAMING FUTURE CLEANUP
           // If user cancels mid-stream, orphan tool futures may leak.
           // Await all pre-started futures to prevent resource leaks.
           for (final entry in streamingFutures.entries) {
@@ -408,7 +426,7 @@ class AetherCore {
           }
           streamingFutures.clear();
 
-          // 🔱 Heart Snatch: GRACEFUL CANCEL WITH AUTO-SUMMARY
+          // 🔱 Core Extraction: GRACEFUL CANCEL WITH AUTO-SUMMARY
           // When user cancels mid-agentic-loop, summarize what was
           // accomplished so far. Much better than just "Cancelled".
           if (turnCount > 1 && assistantFullText.trim().isNotEmpty) {
@@ -438,7 +456,7 @@ class AetherCore {
           break;
         }
 
-        // 🔱 Heart Snatch: WITHHOLDING PATTERN
+        // 🔱 Core Extraction: WITHHOLDING PATTERN
         // Recoverable errors are WITHHELD from the user.
         // No "Retrying..." messages, no "Stream error" banners.
         // User just sees continuous "Thinking..." while we silently retry.
@@ -549,7 +567,7 @@ class AetherCore {
           }
         }
 
-        // 🔱 Heart Snatch: TOOL CALL DEDUPLICATION GUARD
+        // 🔱 Core Extraction: TOOL CALL DEDUPLICATION GUARD
         // 2B models sometimes emit the same tool_call twice (e.g., two
         // identical mkdir commands). Deduplicate by command fingerprint
         // to prevent wasted execution and confusing double-results.
@@ -670,7 +688,7 @@ class AetherCore {
           });
           final toolExecStopwatch = Stopwatch()..start();
 
-          // 🔱 Heart Snatch: STREAMING TOOL EXECUTOR — collect pre-started results.
+          // 🔱 Core Extraction: STREAMING TOOL EXECUTOR — collect pre-started results.
           // Tools that were started mid-stream already have futures in streamingFutures.
           // For tools not yet started (Guardian mode or text-intercepted), execute now.
           final results = <ToolResult>[];
@@ -698,7 +716,7 @@ class AetherCore {
               });
               results.add(await router.executeSingleTool(req));
             }
-            // 🔱 Heart Snatch: Progress event — tool completed
+            // 🔱 Core Extraction: Progress event — tool completed
             _eventController.add({
               'type': 'tool_progress',
               'tool_name': req.name,
@@ -745,13 +763,14 @@ class AetherCore {
               metadata: {
                 'tool_name': req?.name ?? 'function',
                 'is_read_only': isReadOnlyFlag,
+                'args': req?.params,
               },
             );
             history.add(toolMsg);
           }
 
           consecutiveErrors = 0;
-          // 🔱 Heart Snatch: Track tool calls for session telemetry
+          // 🔱 Core Extraction: Track tool calls for session telemetry
           _sessionTotalToolCalls += results.length;
 
           // 🔱 Phase 4 Fix B: Truncate the assistant's verbose text in history.
@@ -903,7 +922,7 @@ class AetherCore {
         if (_cancelRequested) break;
 
         final errorStr = e.toString();
-        if (LocalInferenceService.isFatalEngineError(errorStr)) {
+        if (isFatalEngineError(errorStr)) {
           _eventController.add({
             'type': 'fatal_error',
             'data': 'Fatal engine error: $errorStr',
@@ -914,7 +933,7 @@ class AetherCore {
         }
 
         consecutiveErrors++;
-        // 🔱 Heart Snatch: Withhold catch-block errors too.
+        // 🔱 Core Extraction: Withhold catch-block errors too.
         // No recovery UI events — silent retry.
         logger.w('🔱 [Withhold] Catch-block error (silent retry $consecutiveErrors/$maxRetries): $errorStr');
 
@@ -966,7 +985,7 @@ class AetherCore {
     }
   }
 
-  /// 🔱 Heart Snatch: THINKING TOKEN HISTORY STRIP
+  /// 🔱 Core Extraction: THINKING TOKEN HISTORY STRIP
   /// ThinkingTokens from model reasoning get stored in assistant content
   /// (via `<|channel>thought...<channel|>` blocks). These waste precious
   /// context on the 32K window. Strip them from history messages.
@@ -995,7 +1014,7 @@ class AetherCore {
     for (int i = 0; i < history.length; i++) {
       final m = history[i];
       if (m.role == MessageRole.tool && m.content.length > 2000) {
-        // 🔱 Heart Snatch: HEAD + TAIL pattern (not just HEAD)
+        // 🔱 Core Extraction: HEAD + TAIL pattern (not just HEAD)
         // Optimal Context Retention: Keeps the first 500 chars (headers) and last 300 chars (errors).
         // This gives the model both the beginning (command output header)
         // and the end (exit status, final lines) for better reasoning.
@@ -1076,12 +1095,12 @@ class AetherCore {
 
     _eventController.add({'type': 'status', 'data': 'Thinking...'});
 
-    // 🔱 Heart Snatch: SimpleChat gets SAME hardening as LetsDo
+    // 🔱 Core Extraction: SimpleChat gets SAME hardening as LetsDo
     _microCompact(history);
     await _autoCompactIfNeeded(history, callModel);
     _trimHistory(history);
 
-    // 🔱 Heart Snatch: THINKING TOKEN STRIP
+    // 🔱 Core Extraction: THINKING TOKEN STRIP
     // ThinkingTokens in history waste context space. Strip them
     // before sending to model — they're internal reasoning, not conversation.
     _stripThinkingFromHistory(history);
@@ -1448,7 +1467,7 @@ class AetherCore {
     }
   }
 
-  /// 🔱 Heart Snatch: AUTO-COMPACT / AI SUMMARIZATION
+  /// 🔱 Core Extraction: AUTO-COMPACT / AI SUMMARIZATION
   /// 🔱 Infinite Memory Architecture: when context grows too large,
   /// use the model itself to summarize old context. This keeps the 32K
   /// context window lean while preserving all critical information.

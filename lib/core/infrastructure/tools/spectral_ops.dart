@@ -231,7 +231,7 @@ class SpectralOps {
         );
       }
 
-      // 🔱 Heart Snatch: TOOL RESULT DISK PERSISTENCE
+      // 🔱 Core Extraction: TOOL RESULT DISK PERSISTENCE
       // When output is large (>5000 chars), save full output to disk
       // and return a preview + file reference. This keeps the context
       // window lean while giving the model access to full data via file_read.

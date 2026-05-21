@@ -70,3 +70,9 @@ migrate_working_dir/
 *.tflite
 *.bin
 !assets/*.bin
+
+# CLI Runtime (auto-generated sandbox and config)
+apex_sandbox/
+.apex_lite_config.json
+release_info.json
+upload_response.json

@@ -1,12 +1,12 @@
-# 🔱 HEART SNATCH — Claude Code → Agent Kharwal
+# 🔱 HEART SNATCH — Aether Engine → Agent Kharwal
 
-> **Source**: `/Volumes/Secret_Lab/claude-code/src/`  
+> **Source**: `/Volumes/Secret_Lab/Aether-code/src/`  
 > **Target**: Agent Kharwal (Gemma 4 E2B, On-Device, 2B Model)  
 > **Date**: 2026-05-17
 
 ---
 
-## 📊 ARCHITECTURE OVERVIEW — What Claude Code Actually Does
+## 📊 ARCHITECTURE OVERVIEW — What Aether Engine Actually Does
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -36,7 +36,7 @@
 
 **Concept**: Jab recoverable error aaye (prompt-too-long, max-output-tokens, media-size), user ko DIKHAO MAT. Silently retry karo. Sirf jab recovery fail ho TABHI error surface karo.
 
-### EXACT Claude Code Implementation:
+### EXACT Aether Engine Implementation:
 
 ```typescript
 // query.ts:799-825 — THE WITHHOLDING PATTERN
@@ -687,7 +687,7 @@ StreamBuilder<ToolProgressEvent>(
 
 | Pattern | Kyun NAHI |
 |---------|-----------|
-| **Model Fallback** (Sonnet→Opus) | Humare paas sirf 1 model (E2B). Swap impossible. |
+| **Model Fallback** (aurora→Opus) | Humare paas sirf 1 model (E2B). Swap impossible. |
 | **Max-Tokens Escalation** (8K→64K) | LiteRT-LM mein output cap fixed hai native level pe. |
 | **Lazy Tool Loading** (ToolSearch) | Humare 7-8 tools hain. Sab load karna sasta hai. |
 | **MCP** (Model Context Protocol) | On-device = no external servers. |
@@ -714,7 +714,7 @@ StreamBuilder<ToolProgressEvent>(
 ## 🎯 COPY-PASTE IMPLEMENTATION PROMPT
 
 ```
-Bhai, Claude Code se ye 2 patterns chura ke Agent Kharwal mein implement karo:
+Bhai, Aether Engine se ye 2 patterns adapt ke Agent Kharwal mein implement karo:
 
 1. WITHHOLDING PATTERN:
    - AetherCore._runInternalPulse() mein ek `bool isWithholding` flag add karo

@@ -399,6 +399,7 @@ Future<Stream<InferenceEvent>> callDirectGroqModel(
     'stream': true,
     'temperature': 0.6,
     'top_p': 0.95,
+    'stop': null,
   };
 
   // Dynamically apply reasoning parameters for Qwen or other reasoning-capable models

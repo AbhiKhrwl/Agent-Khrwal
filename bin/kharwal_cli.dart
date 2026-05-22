@@ -428,19 +428,72 @@ Future<Stream<InferenceEvent>> callDirectGroqModel(
   }
 
   try {
-    final client = http.Client();
-    final request = http.Request('POST', url)
-      ..headers['Content-Type'] = 'application/json'
-      ..headers['Authorization'] = 'Bearer $apiKey'
-      ..body = json.encode(payload);
+    http.Client? activeClient;
+    http.StreamedResponse? activeResponse;
+    const maxAttempts = 3;
 
-    final response = await client.send(request);
-    
-    if (response.statusCode != 200) {
-      final errBody = await response.stream.transform(utf8.decoder).join();
-      client.close();
-      throw Exception('Groq API Error (HTTP ${response.statusCode}): $errBody');
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+      final currentClient = http.Client();
+      final request = http.Request('POST', url)
+        ..headers['Content-Type'] = 'application/json'
+        ..headers['Authorization'] = 'Bearer $apiKey'
+        ..body = json.encode(payload);
+
+      try {
+        final response = await currentClient.send(request);
+
+        if (response.statusCode == 429) {
+          final errBody = await response.stream.transform(utf8.decoder).join();
+          currentClient.close();
+
+          if (attempt == maxAttempts) {
+            throw Exception('Groq API Error (HTTP 429): $errBody');
+          }
+
+          double waitSeconds = 5.0;
+          final match = RegExp(r'try again in ([\d\.]+)s').firstMatch(errBody);
+          if (match != null) {
+            waitSeconds = double.tryParse(match.group(1)!) ?? 5.0;
+          }
+
+          if (waitSeconds > 5.0) {
+            waitSeconds = 5.0;
+          }
+
+          // Premium luxury CLI indicator (Gold themed)
+          stdout.write('\r\x1B[38;2;255;215;0m⏳ Rate limit hit. Clearing buffers in ${waitSeconds.toStringAsFixed(1)}s...\x1B[0m');
+          
+          await Future.delayed(Duration(milliseconds: (waitSeconds * 1000).toInt()));
+          
+          // Clear line
+          stdout.write('\r\x1B[K');
+          continue;
+        }
+
+        if (response.statusCode != 200) {
+          final errBody = await response.stream.transform(utf8.decoder).join();
+          currentClient.close();
+          throw Exception('Groq API Error (HTTP ${response.statusCode}): $errBody');
+        }
+
+        activeClient = currentClient;
+        activeResponse = response;
+        break;
+      } catch (e) {
+        currentClient.close();
+        if (attempt == maxAttempts) {
+          rethrow;
+        }
+        await Future.delayed(const Duration(seconds: 1));
+      }
     }
+
+    if (activeClient == null || activeResponse == null) {
+      throw Exception('Failed to establish connection to Groq after $maxAttempts attempts.');
+    }
+
+    final client = activeClient;
+    final response = activeResponse;
 
     // Track accumulated tool call chunks (Groq streams tool_calls in fragments)
     final Map<int, Map<String, String>> toolCallAccumulator = {};

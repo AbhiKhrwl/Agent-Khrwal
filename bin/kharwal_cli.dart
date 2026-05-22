@@ -22,11 +22,22 @@ import 'package:apex_lite/core/infrastructure/tools/file_write_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/data_injector_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/notification_agent_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/voice_munshi_tool.dart';
+import 'package:apex_lite/core/infrastructure/tools/file_edit_tool.dart';
+import 'package:apex_lite/core/infrastructure/tools/glob_tool.dart';
+import 'package:apex_lite/core/infrastructure/tools/grep_tool.dart';
+import 'package:apex_lite/core/infrastructure/tools/web_search_tool.dart';
+import 'package:apex_lite/core/infrastructure/tools/web_fetch_tool.dart';
+import 'package:apex_lite/core/infrastructure/tools/agent_tool.dart';
+import 'package:apex_lite/core/infrastructure/tools/todo_write_tool.dart';
+import 'package:apex_lite/core/infrastructure/tools/task_tools.dart';
+import 'package:apex_lite/core/infrastructure/tools/send_message_tool.dart';
+import 'package:apex_lite/core/infrastructure/tools/brief_tool.dart';
+import 'package:apex_lite/core/infrastructure/tools/plan_mode_tools.dart';
+import 'package:apex_lite/core/infrastructure/tools/ask_user_question_tool.dart';
 import 'package:apex_lite/core/infrastructure/prompts/kharwal_behavior.dart';
 import 'package:apex_lite/core/domain/interfaces/i_tool.dart';
 import 'package:apex_lite/cli/terminal_forge.dart';
 import 'package:apex_lite/cli/theme/chrome_aura.dart';
-
 
 /// 🔱 CLI Input Adapter Implementation
 class CLIInputAdapter implements IInputAdapter {
@@ -43,14 +54,11 @@ class CLIInputAdapter implements IInputAdapter {
     } catch (_) {
       // Gracefully handle StdinException when not running in an interactive terminal (e.g. background runners)
     }
-    
+
     stdin.listen((List<int> codes) {
       final input = utf8.decode(codes).trim();
       if (input.isNotEmpty) {
-        _controller.add(InputEvent(
-          type: InputType.text,
-          data: input,
-        ));
+        _controller.add(InputEvent(type: InputType.text, data: input));
       }
     });
   }
@@ -62,7 +70,7 @@ class CLIInputAdapter implements IInputAdapter {
       print('   👉 Tool: ${req.name} | Params: ${req.params}');
     }
     stdout.write('   Approve execution? (y/n): ');
-    
+
     final response = stdin.readLineSync()?.trim().toLowerCase();
     return response == 'y' || response == 'yes';
   }
@@ -105,7 +113,7 @@ Future<Stream<InferenceEvent>> callDirectGeminiModel(
   List<ITool>? tools,
 }) async {
   final controller = StreamController<InferenceEvent>();
-  
+
   // Extract system messages first and join them
   final systemMessages = history
       .where((m) => m.role == MessageRole.system)
@@ -128,22 +136,23 @@ Future<Stream<InferenceEvent>> callDirectGeminiModel(
       } else {
         contents.add({
           'role': 'user',
-          'parts': [{'text': msg.content}]
+          'parts': [
+            {'text': msg.content},
+          ],
         });
       }
     } else if (msg.role == MessageRole.assistant) {
       // Find all subsequent tool messages that correspond to this assistant turn
       final toolParts = <Map<String, dynamic>>[];
       int j = i + 1;
-      while (j < conversationHistory.length && conversationHistory[j].role == MessageRole.tool) {
+      while (j < conversationHistory.length &&
+          conversationHistory[j].role == MessageRole.tool) {
         final toolMsg = conversationHistory[j];
         final toolName = toolMsg.metadata['tool_name'] as String? ?? 'function';
-        final toolArgs = toolMsg.metadata['args'] as Map<String, dynamic>? ?? {};
+        final toolArgs =
+            toolMsg.metadata['args'] as Map<String, dynamic>? ?? {};
         toolParts.add({
-          'functionCall': {
-            'name': toolName,
-            'args': toolArgs,
-          }
+          'functionCall': {'name': toolName, 'args': toolArgs},
         });
         j++;
       }
@@ -158,19 +167,14 @@ Future<Stream<InferenceEvent>> callDirectGeminiModel(
         parts.add({'text': 'Running tool...'});
       }
 
-      contents.add({
-        'role': 'model',
-        'parts': parts,
-      });
+      contents.add({'role': 'model', 'parts': parts});
     } else if (msg.role == MessageRole.tool) {
       final toolName = msg.metadata['tool_name'] as String? ?? 'function';
       final functionResponsePart = {
         'functionResponse': {
           'name': toolName,
-          'response': {
-            'content': msg.content,
-          }
-        }
+          'response': {'content': msg.content},
+        },
       };
 
       if (contents.isNotEmpty && contents.last['role'] == 'function') {
@@ -179,7 +183,7 @@ Future<Stream<InferenceEvent>> callDirectGeminiModel(
       } else {
         contents.add({
           'role': 'function',
-          'parts': [functionResponsePart]
+          'parts': [functionResponsePart],
         });
       }
     }
@@ -188,16 +192,16 @@ Future<Stream<InferenceEvent>> callDirectGeminiModel(
   // Handle model name correctly
   final cleanModel = model.startsWith('models/') ? model : 'models/$model';
   final url = Uri.parse(
-    'https://generativelanguage.googleapis.com/v1beta/$cleanModel:streamGenerateContent?key=$apiKey'
+    'https://generativelanguage.googleapis.com/v1beta/$cleanModel:streamGenerateContent?key=$apiKey',
   );
 
-  final payload = <String, dynamic>{
-    'contents': contents,
-  };
+  final payload = <String, dynamic>{'contents': contents};
 
   if (systemMessages.isNotEmpty) {
     payload['systemInstruction'] = {
-      'parts': [{'text': systemMessages}]
+      'parts': [
+        {'text': systemMessages},
+      ],
     };
   }
 
@@ -211,9 +215,7 @@ Future<Stream<InferenceEvent>> callDirectGeminiModel(
       });
     }
     payload['tools'] = [
-      {
-        'functionDeclarations': declarations,
-      }
+      {'functionDeclarations': declarations},
     ];
   }
 
@@ -231,75 +233,89 @@ Future<Stream<InferenceEvent>> callDirectGeminiModel(
       ..body = json.encode(payload);
 
     final response = await client.send(request);
-    
+
     if (response.statusCode != 200) {
       final errBody = await response.stream.transform(utf8.decoder).join();
       client.close();
-      throw Exception('Gemini API Error (HTTP ${response.statusCode}): $errBody');
+      throw Exception(
+        'Gemini API Error (HTTP ${response.statusCode}): $errBody',
+      );
     }
 
     var buffer = '';
     var braceCount = 0;
     var inString = false;
     var escaped = false;
-    
+
     response.stream
         .transform(utf8.decoder)
-        .listen((chunk) {
-          for (var i = 0; i < chunk.length; i++) {
-            final char = chunk[i];
-            buffer += char;
+        .listen(
+          (chunk) {
+            for (var i = 0; i < chunk.length; i++) {
+              final char = chunk[i];
+              buffer += char;
 
-            if (escaped) {
-              escaped = false;
-              continue;
-            }
+              if (escaped) {
+                escaped = false;
+                continue;
+              }
 
-            if (char == '\\') {
-              escaped = true;
-              continue;
-            }
+              if (char == '\\') {
+                escaped = true;
+                continue;
+              }
 
-            if (char == '"') {
-              inString = !inString;
-              continue;
-            }
+              if (char == '"') {
+                inString = !inString;
+                continue;
+              }
 
-            if (!inString) {
-              if (char == '{') {
-                braceCount++;
-              } else if (char == '}') {
-                braceCount--;
-                if (braceCount == 0 && buffer.trim().isNotEmpty) {
-                  try {
-                    final startIdx = buffer.indexOf('{');
-                    if (startIdx >= 0) {
-                      final jsonStr = buffer.substring(startIdx);
-                      final parsed = json.decode(jsonStr) as Map<String, dynamic>;
-                      
-                      // Extract text tokens and function calls from response candidate parts
-                      final candidates = parsed['candidates'] as List?;
-                      if (candidates != null && candidates.isNotEmpty) {
-                        final firstCand = candidates[0] as Map<String, dynamic>;
-                        final content = firstCand['content'] as Map<String, dynamic>?;
-                        if (content != null) {
-                          final parts = content['parts'] as List?;
-                          if (parts != null) {
-                            for (final part in parts) {
-                              if (part is Map<String, dynamic>) {
-                                final text = part['text'] as String?;
-                                if (text != null && text.isNotEmpty) {
-                                  controller.add(TextToken(text));
-                                }
-                                final functionCall = part['functionCall'] as Map<String, dynamic>?;
-                                if (functionCall != null) {
-                                  final name = functionCall['name'] as String?;
-                                  final args = functionCall['args'] as Map<String, dynamic>?;
-                                  if (name != null) {
-                                    controller.add(ToolCallEvent(
-                                      name: name,
-                                      args: args ?? {},
-                                    ));
+              if (!inString) {
+                if (char == '{') {
+                  braceCount++;
+                } else if (char == '}') {
+                  braceCount--;
+                  if (braceCount == 0 && buffer.trim().isNotEmpty) {
+                    try {
+                      final startIdx = buffer.indexOf('{');
+                      if (startIdx >= 0) {
+                        final jsonStr = buffer.substring(startIdx);
+                        final parsed =
+                            json.decode(jsonStr) as Map<String, dynamic>;
+
+                        // Extract text tokens and function calls from response candidate parts
+                        final candidates = parsed['candidates'] as List?;
+                        if (candidates != null && candidates.isNotEmpty) {
+                          final firstCand =
+                              candidates[0] as Map<String, dynamic>;
+                          final content =
+                              firstCand['content'] as Map<String, dynamic>?;
+                          if (content != null) {
+                            final parts = content['parts'] as List?;
+                            if (parts != null) {
+                              for (final part in parts) {
+                                if (part is Map<String, dynamic>) {
+                                  final text = part['text'] as String?;
+                                  if (text != null && text.isNotEmpty) {
+                                    controller.add(TextToken(text));
+                                  }
+                                  final functionCall =
+                                      part['functionCall']
+                                          as Map<String, dynamic>?;
+                                  if (functionCall != null) {
+                                    final name =
+                                        functionCall['name'] as String?;
+                                    final args =
+                                        functionCall['args']
+                                            as Map<String, dynamic>?;
+                                    if (name != null) {
+                                      controller.add(
+                                        ToolCallEvent(
+                                          name: name,
+                                          args: args ?? {},
+                                        ),
+                                      );
+                                    }
                                   }
                                 }
                               }
@@ -307,23 +323,25 @@ Future<Stream<InferenceEvent>> callDirectGeminiModel(
                           }
                         }
                       }
+                    } catch (_) {
+                      // Ignore parse errors on malformed chunks/buffers
                     }
-                  } catch (_) {
-                    // Ignore parse errors on malformed chunks/buffers
+                    buffer = '';
                   }
-                  buffer = '';
                 }
               }
             }
-          }
-        }, onDone: () {
-          controller.close();
-          client.close();
-        }, onError: (err) {
-          controller.add(FatalErrorEvent(err.toString()));
-          controller.close();
-          client.close();
-        });
+          },
+          onDone: () {
+            controller.close();
+            client.close();
+          },
+          onError: (err) {
+            controller.add(FatalErrorEvent(err.toString()));
+            controller.close();
+            client.close();
+          },
+        );
   } catch (e) {
     controller.add(FatalErrorEvent('Gemini connection failed: $e'));
     controller.close();
@@ -343,7 +361,7 @@ Future<Stream<InferenceEvent>> callDirectGroqModel(
   List<ITool>? tools,
 }) async {
   final controller = StreamController<InferenceEvent>();
-  
+
   final messages = <Map<String, dynamic>>[];
   for (final m in history) {
     if (m.role == MessageRole.tool) {
@@ -353,26 +371,23 @@ Future<Stream<InferenceEvent>> callDirectGroqModel(
         'tool_call_id': m.toolUseId ?? m.metadata['tool_name'] ?? 'call',
       });
     } else if (m.role == MessageRole.assistant) {
-      final msg = <String, dynamic>{
-        'role': 'assistant',
-        'content': m.content,
-      };
+      final msg = <String, dynamic>{'role': 'assistant', 'content': m.content};
       // If the next message(s) are tool results, this assistant turn had tool_calls
       final assistantIdx = history.indexOf(m);
-      if (assistantIdx + 1 < history.length && history[assistantIdx + 1].role == MessageRole.tool) {
+      if (assistantIdx + 1 < history.length &&
+          history[assistantIdx + 1].role == MessageRole.tool) {
         final toolCalls = <Map<String, dynamic>>[];
         int j = assistantIdx + 1;
         while (j < history.length && history[j].role == MessageRole.tool) {
           final toolMsg = history[j];
-          final toolName = toolMsg.metadata['tool_name'] as String? ?? 'function';
-          final toolArgs = toolMsg.metadata['args'] as Map<String, dynamic>? ?? {};
+          final toolName =
+              toolMsg.metadata['tool_name'] as String? ?? 'function';
+          final toolArgs =
+              toolMsg.metadata['args'] as Map<String, dynamic>? ?? {};
           toolCalls.add({
             'id': toolMsg.toolUseId ?? toolName,
             'type': 'function',
-            'function': {
-              'name': toolName,
-              'arguments': json.encode(toolArgs),
-            },
+            'function': {'name': toolName, 'arguments': json.encode(toolArgs)},
           });
           j++;
         }
@@ -404,7 +419,8 @@ Future<Stream<InferenceEvent>> callDirectGroqModel(
 
   // Dynamically apply reasoning parameters for actual reasoning-capable models (e.g. DeepSeek R1)
   final modelLower = model.toLowerCase();
-  final isReasoning = modelLower.contains('deepseek') || modelLower.contains('r1');
+  final isReasoning =
+      modelLower.contains('deepseek') || modelLower.contains('r1');
   if (isReasoning) {
     payload['max_completion_tokens'] = 4096;
     payload['reasoning_effort'] = 'default';
@@ -461,10 +477,14 @@ Future<Stream<InferenceEvent>> callDirectGroqModel(
           }
 
           // Premium luxury CLI indicator (Gold themed)
-          stdout.write('\r\x1B[38;2;255;215;0m⏳ Rate limit hit. Clearing buffers in ${waitSeconds.toStringAsFixed(1)}s...\x1B[0m');
-          
-          await Future.delayed(Duration(milliseconds: (waitSeconds * 1000).toInt()));
-          
+          stdout.write(
+            '\r\x1B[38;2;255;215;0m⏳ Rate limit hit. Clearing buffers in ${waitSeconds.toStringAsFixed(1)}s...\x1B[0m',
+          );
+
+          await Future.delayed(
+            Duration(milliseconds: (waitSeconds * 1000).toInt()),
+          );
+
           // Clear line
           stdout.write('\r\x1B[K');
           continue;
@@ -473,7 +493,9 @@ Future<Stream<InferenceEvent>> callDirectGroqModel(
         if (response.statusCode != 200) {
           final errBody = await response.stream.transform(utf8.decoder).join();
           currentClient.close();
-          throw Exception('Groq API Error (HTTP ${response.statusCode}): $errBody');
+          throw Exception(
+            'Groq API Error (HTTP ${response.statusCode}): $errBody',
+          );
         }
 
         activeClient = currentClient;
@@ -489,7 +511,9 @@ Future<Stream<InferenceEvent>> callDirectGroqModel(
     }
 
     if (activeClient == null || activeResponse == null) {
-      throw Exception('Failed to establish connection to Groq after $maxAttempts attempts.');
+      throw Exception(
+        'Failed to establish connection to Groq after $maxAttempts attempts.',
+      );
     }
 
     final client = activeClient;
@@ -497,85 +521,100 @@ Future<Stream<InferenceEvent>> callDirectGroqModel(
 
     // Track accumulated tool call chunks (Groq streams tool_calls in fragments)
     final Map<int, Map<String, String>> toolCallAccumulator = {};
-    
+
     response.stream
         .transform(utf8.decoder)
         .transform(const LineSplitter())
-        .listen((line) {
-          final trimmed = line.trim();
-          if (trimmed.isEmpty || trimmed == 'data: [DONE]') {
-            // On DONE, flush any accumulated tool calls
-            if (trimmed == 'data: [DONE]') {
-              for (final entry in toolCallAccumulator.values) {
-                final name = entry['name'] ?? '';
-                final argsStr = entry['arguments'] ?? '{}';
-                if (name.isNotEmpty) {
-                  try {
-                    final args = json.decode(argsStr) as Map<String, dynamic>;
-                    controller.add(ToolCallEvent(name: name, args: args));
-                  } catch (_) {
-                    controller.add(ToolCallEvent(name: name, args: {'raw': argsStr}));
+        .listen(
+          (line) {
+            final trimmed = line.trim();
+            if (trimmed.isEmpty || trimmed == 'data: [DONE]') {
+              // On DONE, flush any accumulated tool calls
+              if (trimmed == 'data: [DONE]') {
+                for (final entry in toolCallAccumulator.values) {
+                  final name = entry['name'] ?? '';
+                  final argsStr = entry['arguments'] ?? '{}';
+                  if (name.isNotEmpty) {
+                    try {
+                      final args = json.decode(argsStr) as Map<String, dynamic>;
+                      controller.add(ToolCallEvent(name: name, args: args));
+                    } catch (_) {
+                      controller.add(
+                        ToolCallEvent(name: name, args: {'raw': argsStr}),
+                      );
+                    }
                   }
                 }
+                toolCallAccumulator.clear();
               }
-              toolCallAccumulator.clear();
+              return;
             }
-            return;
-          }
-          if (trimmed.startsWith('data: ')) {
-            try {
-              final data = json.decode(trimmed.substring(6));
-              final choices = data['choices'];
-              if (choices != null && choices.isNotEmpty) {
-                final delta = choices[0]['delta'];
-                if (delta != null) {
-                  // Handle text content
-                  if (delta['content'] != null) {
-                    controller.add(TextToken(delta['content'] as String));
-                  }
-                  // Handle streamed tool_calls
-                  final toolCalls = delta['tool_calls'] as List?;
-                  if (toolCalls != null) {
-                    for (final tc in toolCalls) {
-                      final index = tc['index'] as int? ?? 0;
-                      final function = tc['function'] as Map<String, dynamic>?;
-                      if (function != null) {
-                        toolCallAccumulator.putIfAbsent(index, () => {'name': '', 'arguments': ''});
-                        if (function['name'] != null) {
-                          toolCallAccumulator[index]!['name'] = function['name'] as String;
-                        }
-                        if (function['arguments'] != null) {
-                          toolCallAccumulator[index]!['arguments'] =
-                              (toolCallAccumulator[index]!['arguments'] ?? '') + (function['arguments'] as String);
+            if (trimmed.startsWith('data: ')) {
+              try {
+                final data = json.decode(trimmed.substring(6));
+                final choices = data['choices'];
+                if (choices != null && choices.isNotEmpty) {
+                  final delta = choices[0]['delta'];
+                  if (delta != null) {
+                    // Handle text content
+                    if (delta['content'] != null) {
+                      controller.add(TextToken(delta['content'] as String));
+                    }
+                    // Handle streamed tool_calls
+                    final toolCalls = delta['tool_calls'] as List?;
+                    if (toolCalls != null) {
+                      for (final tc in toolCalls) {
+                        final index = tc['index'] as int? ?? 0;
+                        final function =
+                            tc['function'] as Map<String, dynamic>?;
+                        if (function != null) {
+                          toolCallAccumulator.putIfAbsent(
+                            index,
+                            () => {'name': '', 'arguments': ''},
+                          );
+                          if (function['name'] != null) {
+                            toolCallAccumulator[index]!['name'] =
+                                function['name'] as String;
+                          }
+                          if (function['arguments'] != null) {
+                            toolCallAccumulator[index]!['arguments'] =
+                                (toolCallAccumulator[index]!['arguments'] ??
+                                    '') +
+                                (function['arguments'] as String);
+                          }
                         }
                       }
                     }
                   }
                 }
-              }
-            } catch (_) {}
-          }
-        }, onDone: () {
-          // Flush remaining tool calls on stream end
-          for (final entry in toolCallAccumulator.values) {
-            final name = entry['name'] ?? '';
-            final argsStr = entry['arguments'] ?? '{}';
-            if (name.isNotEmpty) {
-              try {
-                final args = json.decode(argsStr) as Map<String, dynamic>;
-                controller.add(ToolCallEvent(name: name, args: args));
-              } catch (_) {
-                controller.add(ToolCallEvent(name: name, args: {'raw': argsStr}));
+              } catch (_) {}
+            }
+          },
+          onDone: () {
+            // Flush remaining tool calls on stream end
+            for (final entry in toolCallAccumulator.values) {
+              final name = entry['name'] ?? '';
+              final argsStr = entry['arguments'] ?? '{}';
+              if (name.isNotEmpty) {
+                try {
+                  final args = json.decode(argsStr) as Map<String, dynamic>;
+                  controller.add(ToolCallEvent(name: name, args: args));
+                } catch (_) {
+                  controller.add(
+                    ToolCallEvent(name: name, args: {'raw': argsStr}),
+                  );
+                }
               }
             }
-          }
-          controller.close();
-          client.close();
-        }, onError: (err) {
-          controller.add(FatalErrorEvent(err.toString()));
-          controller.close();
-          client.close();
-        });
+            controller.close();
+            client.close();
+          },
+          onError: (err) {
+            controller.add(FatalErrorEvent(err.toString()));
+            controller.close();
+            client.close();
+          },
+        );
   } catch (e) {
     controller.add(FatalErrorEvent('Groq connection failed: $e'));
     controller.close();
@@ -594,14 +633,15 @@ Future<Stream<InferenceEvent>> callLocalOllamaModel(
   List<ITool>? tools,
 }) async {
   final controller = StreamController<InferenceEvent>();
-  
+
   final messagesJson = <Map<String, dynamic>>[];
   for (final m in history) {
     final msg = <String, dynamic>{
       'role': m.role == MessageRole.tool ? 'tool' : m.role.name,
       'content': m.content,
     };
-    if (m.metadata.containsKey('tool_name')) msg['name'] = m.metadata['tool_name'];
+    if (m.metadata.containsKey('tool_name'))
+      msg['name'] = m.metadata['tool_name'];
     messagesJson.add(msg);
   }
 
@@ -628,7 +668,7 @@ Future<Stream<InferenceEvent>> callLocalOllamaModel(
     }
     payload['tools'] = toolDeclarations;
   }
-  
+
   try {
     final client = http.Client();
     final request = http.Request('POST', url)
@@ -636,51 +676,63 @@ Future<Stream<InferenceEvent>> callLocalOllamaModel(
       ..body = json.encode(payload);
 
     final response = await client.send(request);
-    
+
     if (response.statusCode != 200) {
       final errBody = await response.stream.transform(utf8.decoder).join();
       client.close();
-      throw Exception('Ollama API Error (HTTP ${response.statusCode}): $errBody');
+      throw Exception(
+        'Ollama API Error (HTTP ${response.statusCode}): $errBody',
+      );
     }
-    
+
     response.stream
         .transform(utf8.decoder)
         .transform(const LineSplitter())
-        .listen((line) {
-          if (line.trim().isEmpty) return;
-          try {
-            final parsed = json.decode(line);
-            final message = parsed['message'];
-            if (message != null && message['content'] != null) {
-              final String content = message['content'];
-              
-              if (message['tool_calls'] != null) {
-                for (final tc in message['tool_calls']) {
-                  final function = tc['function'];
-                  controller.add(ToolCallEvent(
-                    name: function['name'],
-                    args: function['arguments'] is Map
-                        ? Map<String, dynamic>.from(function['arguments'])
-                        : <String, dynamic>{},
-                  ));
+        .listen(
+          (line) {
+            if (line.trim().isEmpty) return;
+            try {
+              final parsed = json.decode(line);
+              final message = parsed['message'];
+              if (message != null && message['content'] != null) {
+                final String content = message['content'];
+
+                if (message['tool_calls'] != null) {
+                  for (final tc in message['tool_calls']) {
+                    final function = tc['function'];
+                    controller.add(
+                      ToolCallEvent(
+                        name: function['name'],
+                        args: function['arguments'] is Map
+                            ? Map<String, dynamic>.from(function['arguments'])
+                            : <String, dynamic>{},
+                      ),
+                    );
+                  }
+                } else {
+                  controller.add(TextToken(content));
                 }
-              } else {
-                controller.add(TextToken(content));
               }
+            } catch (e) {
+              // Ignore parse errors on stream end markers
             }
-          } catch (e) {
-            // Ignore parse errors on stream end markers
-          }
-        }, onDone: () {
-          controller.close();
-          client.close();
-        }, onError: (err) {
-          controller.add(FatalErrorEvent(err.toString()));
-          controller.close();
-          client.close();
-        });
+          },
+          onDone: () {
+            controller.close();
+            client.close();
+          },
+          onError: (err) {
+            controller.add(FatalErrorEvent(err.toString()));
+            controller.close();
+            client.close();
+          },
+        );
   } catch (e) {
-    controller.add(FatalErrorEvent('Ollama connection failed: $e. Is Ollama running at $baseUrl?'));
+    controller.add(
+      FatalErrorEvent(
+        'Ollama connection failed: $e. Is Ollama running at $baseUrl?',
+      ),
+    );
     controller.close();
     rethrow;
   }
@@ -703,11 +755,11 @@ class ProviderConfig {
   });
 
   Map<String, dynamic> toJson() => {
-        'type': type,
-        'apiKey': apiKey,
-        'model': model,
-        'baseUrl': baseUrl,
-      };
+    'type': type,
+    'apiKey': apiKey,
+    'model': model,
+    'baseUrl': baseUrl,
+  };
 
   factory ProviderConfig.fromJson(Map<String, dynamic> json) {
     return ProviderConfig(
@@ -740,7 +792,9 @@ class ConfigManager {
           .map((item) => ProviderConfig.fromJson(item as Map<String, dynamic>))
           .toList();
     } catch (e) {
-      print('\x1B[31m⚠️ Error loading configuration from ${file.path}: $e\x1B[0m');
+      print(
+        '\x1B[31m⚠️ Error loading configuration from ${file.path}: $e\x1B[0m',
+      );
       return [];
     }
   }
@@ -749,7 +803,9 @@ class ConfigManager {
     final file = File(configFilePath);
     try {
       final encoder = JsonEncoder.withIndent('  ');
-      file.writeAsStringSync(encoder.convert(configs.map((c) => c.toJson()).toList()));
+      file.writeAsStringSync(
+        encoder.convert(configs.map((c) => c.toJson()).toList()),
+      );
     } catch (e) {
       print('\x1B[31m⚠️ Error saving configuration to ${file.path}: $e\x1B[0m');
     }
@@ -758,7 +814,9 @@ class ConfigManager {
 
 /// 🔱 API Helpers to fetch and verify models in real-time
 Future<List<String>> fetchGeminiModels(String apiKey) async {
-  final url = Uri.parse('https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey');
+  final url = Uri.parse(
+    'https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey',
+  );
   final response = await http.get(url).timeout(const Duration(seconds: 8));
   if (response.statusCode != 200) {
     throw Exception('Gemini API returned HTTP ${response.statusCode}');
@@ -766,7 +824,7 @@ Future<List<String>> fetchGeminiModels(String apiKey) async {
   final decoded = json.decode(response.body);
   final modelsList = decoded['models'] as List?;
   if (modelsList == null) return [];
-  
+
   final List<String> names = [];
   for (final m in modelsList) {
     final name = m['name'] as String?;
@@ -783,16 +841,16 @@ Future<List<String>> fetchGeminiModels(String apiKey) async {
 
 Future<List<String>> fetchGroqModels(String apiKey) async {
   final url = Uri.parse('https://api.groq.com/openai/v1/models');
-  final response = await http.get(url, headers: {
-    'Authorization': 'Bearer $apiKey',
-  }).timeout(const Duration(seconds: 8));
+  final response = await http
+      .get(url, headers: {'Authorization': 'Bearer $apiKey'})
+      .timeout(const Duration(seconds: 8));
   if (response.statusCode != 200) {
     throw Exception('Groq API returned HTTP ${response.statusCode}');
   }
   final decoded = json.decode(response.body);
   final dataList = decoded['data'] as List?;
   if (dataList == null) return [];
-  
+
   final List<String> ids = [];
   for (final d in dataList) {
     final id = d['id'] as String?;
@@ -815,7 +873,7 @@ Future<List<String>> fetchOllamaModels(String baseUrl) async {
   final decoded = json.decode(response.body);
   final modelsList = decoded['models'] as List?;
   if (modelsList == null) return [];
-  
+
   final List<String> names = [];
   for (final m in modelsList) {
     final name = m['name'] as String?;
@@ -828,25 +886,41 @@ Future<List<String>> fetchOllamaModels(String baseUrl) async {
 
 /// 🔱 Interactive terminal setup wizard
 Future<List<ProviderConfig>> runSetupWizard() async {
-  print('\n\x1B[36;1m============================================================\x1B[0m');
-  print('\x1B[36;1m🔱               AGENT KHARWAL SETUP WIZARD                 🔱\x1B[0m');
-  print('\x1B[36;1m============================================================\x1B[0m');
+  print(
+    '\n\x1B[36;1m============================================================\x1B[0m',
+  );
+  print(
+    '\x1B[36;1m🔱               AGENT KHARWAL SETUP WIZARD                 🔱\x1B[0m',
+  );
+  print(
+    '\x1B[36;1m============================================================\x1B[0m',
+  );
   print('Welcome! Let\'s configure your Multi-Provider Failover Pool.');
   print('This system will try each provider in priority order.');
-  print('If one is rate-limited or fails, it will instantly switch to the next.');
-  print('Your configuration will be permanently saved to:\n  \x1B[33m${ConfigManager.configFilePath}\x1B[0m\n');
+  print(
+    'If one is rate-limited or fails, it will instantly switch to the next.',
+  );
+  print(
+    'Your configuration will be permanently saved to:\n  \x1B[33m${ConfigManager.configFilePath}\x1B[0m\n',
+  );
 
   final pool = <ProviderConfig>[];
   var configuring = true;
 
   while (configuring) {
     print('\x1B[35;1mSelect an AI Provider to configure:\x1B[0m');
-    print('  \x1B[32m[1] Google Gemini\x1B[0m (Recommended, free tier, strong structured agent support)');
-    print('  \x1B[32m[2] Groq Cloud\x1B[0m (Super-fast open source cloud models like Llama/Mixtral)');
-    print('  \x1B[32m[3] Local Ollama\x1B[0m (100% offline, private, zero-cost)');
+    print(
+      '  \x1B[32m[1] Google Gemini\x1B[0m (Recommended, free tier, strong structured agent support)',
+    );
+    print(
+      '  \x1B[32m[2] Groq Cloud\x1B[0m (Super-fast open source cloud models like Llama/Mixtral)',
+    );
+    print(
+      '  \x1B[32m[3] Local Ollama\x1B[0m (100% offline, private, zero-cost)',
+    );
     print('  \x1B[33m[4] Finish and save configurations & start agent\x1B[0m');
     stdout.write('\nEnter option [1-4]: ');
-    
+
     final choice = stdin.readLineSync()?.trim();
     if (choice == '1') {
       print('\n\x1B[36m--- Configuring Google Gemini ---\x1B[0m');
@@ -856,20 +930,24 @@ Future<List<ProviderConfig>> runSetupWizard() async {
         print('❌ Key cannot be empty. Returning to menu.');
         continue;
       }
-      
+
       print('⏳ Verifying API key and fetching available models...');
       try {
         final models = await fetchGeminiModels(key);
         if (models.isEmpty) {
-          print('⚠️ Key verified but no generation models were returned. Defaulting to gemini-2.5-flash.');
+          print(
+            '⚠️ Key verified but no generation models were returned. Defaulting to gemini-2.5-flash.',
+          );
           models.add('gemini-2.5-flash');
         }
-        
+
         print('\nAvailable Gemini Models:');
         for (int i = 0; i < models.length; i++) {
           print('  [${i + 1}] ${models[i]}');
         }
-        stdout.write('Select model [1-${models.length}] or press Enter for [gemini-2.5-flash]: ');
+        stdout.write(
+          'Select model [1-${models.length}] or press Enter for [gemini-2.5-flash]: ',
+        );
         final modelChoice = stdin.readLineSync()?.trim() ?? '';
         String selectedModel = 'gemini-2.5-flash';
         if (modelChoice.isNotEmpty) {
@@ -880,13 +958,16 @@ Future<List<ProviderConfig>> runSetupWizard() async {
             selectedModel = modelChoice;
           }
         }
-        
-        pool.add(ProviderConfig(type: 'gemini', apiKey: key, model: selectedModel));
-        print('\n\x1B[32m✓ Google Gemini ($selectedModel) added to the pool!\x1B[0m\n');
+
+        pool.add(
+          ProviderConfig(type: 'gemini', apiKey: key, model: selectedModel),
+        );
+        print(
+          '\n\x1B[32m✓ Google Gemini ($selectedModel) added to the pool!\x1B[0m\n',
+        );
       } catch (e) {
         print('\n\x1B[31m❌ API key verification failed: $e\x1B[0m\n');
       }
-      
     } else if (choice == '2') {
       print('\n\x1B[36m--- Configuring Groq Cloud ---\x1B[0m');
       stdout.write('Enter your Groq API Key: ');
@@ -895,20 +976,24 @@ Future<List<ProviderConfig>> runSetupWizard() async {
         print('❌ Key cannot be empty. Returning to menu.');
         continue;
       }
-      
+
       print('⏳ Verifying API key and fetching available models...');
       try {
         final models = await fetchGroqModels(key);
         if (models.isEmpty) {
-          print('⚠️ Key verified but no models were returned. Defaulting to llama-3.3-70b-versatile.');
+          print(
+            '⚠️ Key verified but no models were returned. Defaulting to llama-3.3-70b-versatile.',
+          );
           models.add('llama-3.3-70b-versatile');
         }
-        
+
         print('\nAvailable Groq Models:');
         for (int i = 0; i < models.length; i++) {
           print('  [${i + 1}] ${models[i]}');
         }
-        stdout.write('Select model [1-${models.length}] or press Enter for [llama-3.3-70b-versatile]: ');
+        stdout.write(
+          'Select model [1-${models.length}] or press Enter for [llama-3.3-70b-versatile]: ',
+        );
         final modelChoice = stdin.readLineSync()?.trim() ?? '';
         String selectedModel = 'llama-3.3-70b-versatile';
         if (modelChoice.isNotEmpty) {
@@ -919,13 +1004,16 @@ Future<List<ProviderConfig>> runSetupWizard() async {
             selectedModel = modelChoice;
           }
         }
-        
-        pool.add(ProviderConfig(type: 'groq', apiKey: key, model: selectedModel));
-        print('\n\x1B[32m✓ Groq Cloud ($selectedModel) added to the pool!\x1B[0m\n');
+
+        pool.add(
+          ProviderConfig(type: 'groq', apiKey: key, model: selectedModel),
+        );
+        print(
+          '\n\x1B[32m✓ Groq Cloud ($selectedModel) added to the pool!\x1B[0m\n',
+        );
       } catch (e) {
         print('\n\x1B[31m❌ API key verification failed: $e\x1B[0m\n');
       }
-      
     } else if (choice == '3') {
       print('\n\x1B[36m--- Configuring Local Ollama ---\x1B[0m');
       stdout.write('Enter Ollama Base URL [default: http://localhost:11434]: ');
@@ -933,20 +1021,24 @@ Future<List<ProviderConfig>> runSetupWizard() async {
       if (baseUrl.isEmpty) {
         baseUrl = 'http://localhost:11434';
       }
-      
+
       print('⏳ Connecting to Ollama and listing local models...');
       try {
         final models = await fetchOllamaModels(baseUrl);
         if (models.isEmpty) {
-          print('⚠️ Connection established but no local models found. Defaulting to gemma:2b.');
+          print(
+            '⚠️ Connection established but no local models found. Defaulting to gemma:2b.',
+          );
           models.add('gemma:2b');
         }
-        
+
         print('\nAvailable Ollama Models:');
         for (int i = 0; i < models.length; i++) {
           print('  [${i + 1}] ${models[i]}');
         }
-        stdout.write('Select model [1-${models.length}] or press Enter for [gemma:2b]: ');
+        stdout.write(
+          'Select model [1-${models.length}] or press Enter for [gemma:2b]: ',
+        );
         final modelChoice = stdin.readLineSync()?.trim() ?? '';
         String selectedModel = 'gemma:2b';
         if (modelChoice.isNotEmpty) {
@@ -957,16 +1049,28 @@ Future<List<ProviderConfig>> runSetupWizard() async {
             selectedModel = modelChoice;
           }
         }
-        
-        pool.add(ProviderConfig(type: 'ollama', apiKey: '', model: selectedModel, baseUrl: baseUrl));
-        print('\n\x1B[32m✓ Local Ollama ($selectedModel) added to the pool!\x1B[0m\n');
+
+        pool.add(
+          ProviderConfig(
+            type: 'ollama',
+            apiKey: '',
+            model: selectedModel,
+            baseUrl: baseUrl,
+          ),
+        );
+        print(
+          '\n\x1B[32m✓ Local Ollama ($selectedModel) added to the pool!\x1B[0m\n',
+        );
       } catch (e) {
-        print('\n\x1B[31m❌ Ollama connection failed: $e. Is Ollama running locally?\x1B[0m\n');
+        print(
+          '\n\x1B[31m❌ Ollama connection failed: $e. Is Ollama running locally?\x1B[0m\n',
+        );
       }
-      
     } else if (choice == '4') {
       if (pool.isEmpty) {
-        print('\x1B[31m❌ You must configure at least one active provider before finishing!\x1B[0m\n');
+        print(
+          '\x1B[31m❌ You must configure at least one active provider before finishing!\x1B[0m\n',
+        );
       } else {
         configuring = false;
       }
@@ -983,18 +1087,30 @@ Future<List<ProviderConfig>> runSetupWizard() async {
 
 /// 🔱 Render configured pool beautifully in terminal
 void displayPoolTable(List<ProviderConfig> pool) {
-  print('\n\x1B[36m┌──────────┬──────────┬─────────────────────────────┬────────┐\x1B[0m');
-  print('\x1B[36m│\x1B[0m Priority \x1B[36m│\x1B[0m Provider \x1B[36m│\x1B[0m Model                       \x1B[36m│\x1B[0m Status \x1B[36m│\x1B[0m');
-  print('\x1B[36m├──────────┼──────────┼─────────────────────────────┼────────┤\x1B[0m');
+  print(
+    '\n\x1B[36m┌──────────┬──────────┬─────────────────────────────┬────────┐\x1B[0m',
+  );
+  print(
+    '\x1B[36m│\x1B[0m Priority \x1B[36m│\x1B[0m Provider \x1B[36m│\x1B[0m Model                       \x1B[36m│\x1B[0m Status \x1B[36m│\x1B[0m',
+  );
+  print(
+    '\x1B[36m├──────────┼──────────┼─────────────────────────────┼────────┤\x1B[0m',
+  );
   for (int i = 0; i < pool.length; i++) {
     final provider = pool[i];
     final priority = '#${i + 1}'.padRight(8);
     final type = provider.type.toUpperCase().padRight(8);
-    final model = provider.model.length > 27 ? '${provider.model.substring(0, 24)}...' : provider.model.padRight(27);
+    final model = provider.model.length > 27
+        ? '${provider.model.substring(0, 24)}...'
+        : provider.model.padRight(27);
     final status = (i == 0 ? '✅Active' : '🛡️Backup').padRight(8);
-    print('\x1B[36m│\x1B[0m $priority \x1B[36m│\x1B[0m $type \x1B[36m│\x1B[0m $model \x1B[36m│\x1B[0m $status\x1B[36m│\x1B[0m');
+    print(
+      '\x1B[36m│\x1B[0m $priority \x1B[36m│\x1B[0m $type \x1B[36m│\x1B[0m $model \x1B[36m│\x1B[0m $status\x1B[36m│\x1B[0m',
+    );
   }
-  print('\x1B[36m└──────────┴──────────┴─────────────────────────────┴────────┘\x1B[0m');
+  print(
+    '\x1B[36m└──────────┴──────────┴─────────────────────────────┴────────┘\x1B[0m',
+  );
 }
 
 void main(List<String> args) async {
@@ -1002,23 +1118,29 @@ void main(List<String> args) async {
   final forge = TerminalForge();
 
   final forceConfigure = args.contains('--configure') || args.contains('-c');
-  
+
   // Try to load configured pool
   var activePool = ConfigManager.load();
 
   if (activePool.isEmpty || forceConfigure) {
     if (forceConfigure) {
-      print('${ChromeAura.celestial}⟳ Reconfiguration requested via CLI arguments.${ChromeAura.reset}');
+      print(
+        '${ChromeAura.celestial}⟳ Reconfiguration requested via CLI arguments.${ChromeAura.reset}',
+      );
     } else {
-      print('${ChromeAura.celestial}⚠ No saved configuration found. Starting setup wizard...${ChromeAura.reset}');
+      print(
+        '${ChromeAura.celestial}⚠ No saved configuration found. Starting setup wizard...${ChromeAura.reset}',
+      );
     }
     activePool = await runSetupWizard();
   }
 
   // Display loaded pool in a beautiful table
   displayPoolTable(activePool);
-  print('${ChromeAura.mist}(To reconfigure at any time, run: dart bin/kharwal_cli.dart --configure)${ChromeAura.reset}\n');
-  
+  print(
+    '${ChromeAura.mist}(To reconfigure at any time, run: dart bin/kharwal_cli.dart --configure)${ChromeAura.reset}\n',
+  );
+
   // 1. Setup a safe local workspace directory for CLI sandbox operations
   final sandboxPath = './apex_sandbox';
   final sandboxDir = Directory(sandboxPath);
@@ -1042,10 +1164,32 @@ void main(List<String> args) async {
   }
   router.registerTool(NotificationAgentTool());
   router.registerTool(VoiceMunshiTool());
+  router.registerTool(FileEditTool(sandboxPath));
+  router.registerTool(GlobTool(sandboxPath));
+  router.registerTool(GrepTool(sandboxPath));
+  router.registerTool(WebSearchTool());
+  router.registerTool(WebFetchTool());
+  router.registerTool(AgentTool(sandboxPath));
+  router.registerTool(TodoWriteTool(sandboxPath));
+  router.registerTool(TaskCreateTool(sandboxPath));
+  router.registerTool(TaskGetTool(sandboxPath));
+  router.registerTool(TaskUpdateTool(sandboxPath));
+  router.registerTool(TaskListTool(sandboxPath));
+  router.registerTool(TaskStopTool(sandboxPath));
+  router.registerTool(TaskOutputTool(sandboxPath));
+  router.registerTool(SendMessageTool(sandboxPath));
+  router.registerTool(BriefTool());
+  router.registerTool(EnterPlanModeTool());
+  router.registerTool(ExitPlanModeTool());
+  router.registerTool(AskUserQuestionTool());
 
   // 🔱 Ignite the TerminalForge with full luxury rendering
-  final activeModel = activePool.isNotEmpty ? activePool.first.model : 'unknown';
-  final activeProvider = activePool.isNotEmpty ? activePool.first.type : 'local';
+  final activeModel = activePool.isNotEmpty
+      ? activePool.first.model
+      : 'unknown';
+  final activeProvider = activePool.isNotEmpty
+      ? activePool.first.type
+      : 'local';
   forge.ignite(
     modelName: activeModel,
     provider: activeProvider,
@@ -1098,7 +1242,7 @@ void main(List<String> args) async {
 
   final adapter = CLIInputAdapter();
   final history = <Message>[];
-  
+
   // Inject the KharwalBehavior system prompt (CLI-aware)
   final systemPrompt = KharwalBehavior.build(
     isAgentMode: true,
@@ -1108,7 +1252,6 @@ void main(List<String> args) async {
     modelName: activeModel,
   );
   history.add(Message(role: MessageRole.system, content: systemPrompt));
-
 
   final core = AetherCore(
     router: router,
@@ -1172,7 +1315,7 @@ void main(List<String> args) async {
 
   forge.printFirstPrompt();
   adapter.startListening();
-  
+
   // Start the autonomous event loop
   await core.executePulse(
     inputAdapter: adapter,
@@ -1180,4 +1323,3 @@ void main(List<String> args) async {
     callModel: callModel,
   );
 }
-

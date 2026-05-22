@@ -179,11 +179,14 @@ class SentryPurity {
     if (command.contains('<<')) {
       return 'Heredoc syntax is blocked.';
     }
-    final pipeSegments = command.split('|').map((s) => s.trim().toLowerCase());
-    for (final segment in pipeSegments) {
-      for (final op in _dangerousPipeTargets) {
-        if (segment.startsWith(op)) {
-          return 'Piping to "$op" is blocked.';
+    if (command.contains('|')) {
+      final pipeSegments = command.split('|').map((s) => s.trim().toLowerCase()).toList();
+      for (int i = 1; i < pipeSegments.length; i++) {
+        final segment = pipeSegments[i];
+        for (final op in _dangerousPipeTargets) {
+          if (segment.startsWith(op)) {
+            return 'Piping to "$op" is blocked.';
+          }
         }
       }
     }

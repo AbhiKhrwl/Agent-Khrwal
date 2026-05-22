@@ -402,10 +402,10 @@ Future<Stream<InferenceEvent>> callDirectGroqModel(
     'stop': null,
   };
 
-  // Dynamically apply reasoning parameters for Qwen or other reasoning-capable models
-  if (model.toLowerCase().contains('qwen') || 
-      model.toLowerCase().contains('o1') || 
-      model.toLowerCase().contains('o3')) {
+  // Dynamically apply reasoning parameters for actual reasoning-capable models (e.g. DeepSeek R1)
+  final modelLower = model.toLowerCase();
+  final isReasoning = modelLower.contains('deepseek') || modelLower.contains('r1');
+  if (isReasoning) {
     payload['max_completion_tokens'] = 4096;
     payload['reasoning_effort'] = 'default';
   } else {

@@ -11,7 +11,8 @@ import '../../domain/interfaces/i_tool.dart';
 /// The tool records audio from the microphone and returns it as a base64 WAV
 /// data URI so the Gemma 4 model can natively process the audio.
 class VoiceMunshiTool implements ITool {
-  final AudioRecorder _audioRecorder = AudioRecorder();
+  AudioRecorder? _audioRecorder;
+  AudioRecorder get recorder => _audioRecorder ??= AudioRecorder();
 
   @override
   String get name => 'voice_munshi';
@@ -62,7 +63,7 @@ class VoiceMunshiTool implements ITool {
       final recordDuration = duration.clamp(1, 30);
 
       // Request microphone permission
-      if (await _audioRecorder.hasPermission() == false) {
+      if (await recorder.hasPermission() == false) {
         return ToolResult(
           toolUseId: 'voice_munshi_${DateTime.now().millisecondsSinceEpoch}',
           content: 'Error: Microphone permission not granted',
@@ -84,13 +85,13 @@ class VoiceMunshiTool implements ITool {
       );
 
       // Start recording
-      await _audioRecorder.start(config, path: audioPath);
+      await recorder.start(config, path: audioPath);
 
       // Wait for specified duration
       await Future<void>.delayed(Duration(seconds: recordDuration));
 
       // Stop recording
-      final result = await _audioRecorder.stop();
+      final result = await recorder.stop();
 
       if (result == null) {
         return ToolResult(

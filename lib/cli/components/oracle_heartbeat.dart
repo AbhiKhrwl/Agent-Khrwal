@@ -16,8 +16,13 @@ import '../theme/chrome_aura.dart';
 
 class OracleHeartbeat {
   /// Braille dot animation sequence — smooth rotational flow.
-  static const List<String> _pulse = [
+  static const List<String> _pulseUnicode = [
     '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏',
+  ];
+
+  /// Standard ASCII spinner sequence fallback.
+  static const List<String> _pulseAscii = [
+    '/', '-', '\\', '|',
   ];
 
   String _label;
@@ -26,28 +31,55 @@ class OracleHeartbeat {
   Timer? _clock;
   late DateTime _birthTime;
 
+  /// Control flag to prevent printing directly to stdout when double-buffered.
+  bool isDoubleBuffered = false;
+
   OracleHeartbeat(this._label);
 
   /// Update the label mid-animation (e.g., "Thinking" → "Executing bash").
   void relabel(String newLabel) => _label = newLabel;
 
-  /// Start the heartbeat. Renders at 10Hz (100ms intervals).
+  bool get isAlive => _alive;
+  String get activeLabel => _label;
+
+  /// Detect Unicode support in current terminal environment.
+  bool get supportsUnicode {
+    if (Platform.isWindows) {
+      final term = Platform.environment['TERM'];
+      return term == 'xterm-256color' || term == 'alacritty' || term == 'xterm';
+    }
+    final lang = Platform.environment['LANG']?.toLowerCase() ?? '';
+    return lang.contains('utf-8') || lang.contains('utf8') || lang.contains('en_us');
+  }
+
+  /// Check for reduced motion settings or non-interactive environments.
+  bool get isReducedMotion {
+    final forceColor = Platform.environment['FORCE_COLOR'];
+    final noColor = Platform.environment['NO_COLOR'];
+    if (forceColor == '0' || noColor != null) return true;
+    if (Platform.environment['CI'] != null) return true;
+    if (!stdout.hasTerminal) return true;
+    return false;
+  }
+
+  /// Start the heartbeat. Renders at 10Hz (100ms intervals) if not double-buffered.
   void start() {
     if (_alive) return;
     _alive = true;
     _birthTime = DateTime.now();
     _tick = 0;
 
-    stdout.write(ChromeAura.hideCursor);
-    _clock = Timer.periodic(const Duration(milliseconds: 100), (_) => _render());
+    if (!isDoubleBuffered && stdout.hasTerminal) {
+      stdout.write(ChromeAura.hideCursor);
+      _clock = Timer.periodic(const Duration(milliseconds: 100), (_) => _render());
+    }
   }
 
-  void _render() {
-    if (!_alive) return;
-
+  /// Renders a single frame and returns the ANSI styled string.
+  /// If [customTick] is passed, it uses it for animations (useful in external timers).
+  String getFrame([int? customTick]) {
     final elapsed = DateTime.now().difference(_birthTime).inMilliseconds / 1000.0;
-    final glyph = _pulse[_tick % _pulse.length];
-    _tick++;
+    final tickVal = customTick ?? _tick;
 
     // Context-aware aura transition
     final String aura;
@@ -59,8 +91,17 @@ class OracleHeartbeat {
       aura = ChromeAura.trident; // Normal — cyan pulse
     }
 
+    if (isReducedMotion) {
+      // Reduced motion: static warning symbol and simple ellipses
+      return '  $aura…${ChromeAura.reset} $_label ${ChromeAura.mist}${elapsed.toStringAsFixed(1)}s${ChromeAura.reset}';
+    }
+
+    // Determine pulse characters based on Unicode capabilities
+    final pulseList = supportsUnicode ? _pulseUnicode : _pulseAscii;
+    final glyph = pulseList[tickVal % pulseList.length];
+
     // Shimmer wave: sweep a bright highlight across the label text
-    final shimmerPos = _tick % (_label.length + 4);
+    final shimmerPos = tickVal % (_label.length + 4);
     final shimmerLabel = StringBuffer();
     for (int i = 0; i < _label.length; i++) {
       final distance = (i - shimmerPos).abs();
@@ -74,17 +115,27 @@ class OracleHeartbeat {
     }
 
     final timer = '${ChromeAura.mist}${elapsed.toStringAsFixed(1)}s${ChromeAura.reset}';
-    stdout.write('\r${ChromeAura.clearLine}  $aura$glyph${ChromeAura.reset} $shimmerLabel $timer');
+    return '  $aura$glyph${ChromeAura.reset} $shimmerLabel $timer';
+  }
+
+  void _render() {
+    if (!_alive) return;
+    _tick++;
+    stdout.write('\r${ChromeAura.clearLine}${getFrame()}');
   }
 
   /// Stop the heartbeat and clean the line.
   void stop() {
+    if (!_alive) return;
     _alive = false;
     _clock?.cancel();
-    stdout.write('\r${ChromeAura.clearLine}${ChromeAura.showCursor}');
+    if (!isDoubleBuffered && stdout.hasTerminal) {
+      stdout.write('\r${ChromeAura.clearLine}${ChromeAura.showCursor}');
+    }
   }
 
   /// Get the elapsed seconds since start.
   double get elapsed =>
       _alive ? DateTime.now().difference(_birthTime).inMilliseconds / 1000.0 : 0;
 }
+

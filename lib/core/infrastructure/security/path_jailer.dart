@@ -38,15 +38,18 @@ class PathJailer {
       // 4. Canonicalize to resolve '..' and '.'
       final canonicalPath = p.canonicalize(fullPath);
 
+      // Failsafe symlink resolution to handle macOS symlinks (like /var vs /private/var)
+      final resolvedCanonical = _resolveSymlinksFailsafe(canonicalPath);
+
       // 5. Prefix Validation (Primary Jail)
-      if (!canonicalPath.startsWith(rootPath)) {
+      if (!resolvedCanonical.startsWith(rootPath)) {
         return false;
       }
 
       // 6. Symlink Guard (Deep Defense)
       // Check if the file/dir exists to resolve symlinks
-      final entity = File(canonicalPath);
-      if (entity.existsSync() || Directory(canonicalPath).existsSync()) {
+      final entity = File(resolvedCanonical);
+      if (entity.existsSync() || Directory(resolvedCanonical).existsSync()) {
         final resolvedPath = entity.resolveSymbolicLinksSync();
         if (!resolvedPath.startsWith(rootPath)) {
           return false;
@@ -56,7 +59,7 @@ class PathJailer {
       // 7. Dangerous System Path Regex
       const dangerousRegex =
           r'^\/(etc|var|proc|dev|sys|root|home\/[^\/]+(\/\..+))';
-      if (RegExp(dangerousRegex).hasMatch(canonicalPath)) {
+      if (RegExp(dangerousRegex).hasMatch(resolvedCanonical)) {
         return false;
       }
 
@@ -65,5 +68,40 @@ class PathJailer {
       // If resolution fails, assume unsafe for safety-first posture
       return false;
     }
+  }
+
+  /// Resolves symlinks of a path failsafe. If the path does not exist,
+  /// it recursively checks parents until it finds an existing directory,
+  /// resolves that directory's symlinks, and appends the remainder.
+  String _resolveSymlinksFailsafe(String path) {
+    try {
+      final file = File(path);
+      if (file.existsSync() || Directory(path).existsSync()) {
+        return file.resolveSymbolicLinksSync();
+      }
+    } catch (_) {}
+
+    String current = path;
+    final List<String> segments = [];
+
+    while (current.isNotEmpty && current != p.separator) {
+      final parent = p.dirname(current);
+      if (parent == current) break;
+
+      final name = p.basename(current);
+      segments.insert(0, name);
+
+      try {
+        final parentDir = Directory(parent);
+        if (parentDir.existsSync()) {
+          final resolvedParent = parentDir.resolveSymbolicLinksSync();
+          return p.joinAll([resolvedParent, ...segments]);
+        }
+      } catch (_) {}
+
+      current = parent;
+    }
+
+    return path;
   }
 }

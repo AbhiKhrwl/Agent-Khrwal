@@ -22,7 +22,9 @@ class SentryPurity {
       return ValidationResult(isAllowed: false, reason: paramViolation);
     }
 
-    if (request.name == 'bash') {
+    if (request.name == 'bash' ||
+        request.name == 'cron_create' ||
+        (request.name == 'schedule_cron' && request.params['action'] == 'create')) {
       final command = (request.params['command'] as String?) ?? '';
 
       final metaViolation = _checkShellMetacharacters(command);
@@ -73,7 +75,11 @@ class SentryPurity {
           }
         }
       }
-    } else if (request.name == 'file_read' || request.name == 'file_write') {
+    } else if (request.name == 'file_read' ||
+        request.name == 'file_write' ||
+        request.name == 'notebook_edit' ||
+        request.name == 'lsp' ||
+        request.name.startsWith('mcp__')) {
       // Validate path parameter — must stay within sandbox
       final path = (request.params['path'] as String?) ?? '';
       if (path.isNotEmpty) {
@@ -85,6 +91,14 @@ class SentryPurity {
             );
           }
         }
+      }
+    } else if (request.name == 'skill') {
+      final skillName = (request.params['skill_name'] as String?) ?? '';
+      if (skillName.contains('..') || skillName.contains('/') || skillName.contains('\\')) {
+        return ValidationResult(
+          isAllowed: false,
+          reason: 'Security Violation: Unsafe skill name "$skillName".',
+        );
       }
     } else if (request.name == 'notification_agent') {
       // Validate notification parameters — no shell metacharacters

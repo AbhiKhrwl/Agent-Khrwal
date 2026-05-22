@@ -64,21 +64,94 @@ class _ToolCardState extends State<ToolCard>
 
   /// Get the icon for the tool type
   IconData _toolIcon() {
-    switch (widget.toolName.toLowerCase()) {
+    final name = widget.toolName.toLowerCase();
+    if (name.startsWith('mcp__')) {
+      return Icons.api;
+    }
+    switch (name) {
       case 'bash':
         return Icons.terminal;
+      case 'directory_briefing':
+        return Icons.folder_open;
       case 'file_read':
         return Icons.description_outlined;
       case 'file_write':
         return Icons.edit_document;
-      case 'directory_briefing':
-        return Icons.folder_open;
+      case 'file_edit':
+        return Icons.edit_outlined;
+      case 'glob':
+        return Icons.travel_explore;
+      case 'grep':
+        return Icons.find_in_page_outlined;
       case 'data_injector':
-        return Icons.storage;
+        return Icons.input_outlined;
       case 'notification_agent':
-        return Icons.notifications_active;
+      case 'notification':
+        return Icons.notifications_active_outlined;
       case 'voice_munshi':
         return Icons.mic;
+      case 'web_search':
+        return Icons.search;
+      case 'web_fetch':
+        return Icons.download_rounded;
+      case 'agent':
+        return Icons.smart_toy_outlined;
+      case 'todo_write':
+        return Icons.playlist_add_check;
+      case 'task_create':
+        return Icons.add_task;
+      case 'task_get':
+        return Icons.assignment_outlined;
+      case 'task_update':
+        return Icons.assignment_turned_in_outlined;
+      case 'task_list':
+        return Icons.format_list_bulleted;
+      case 'task_stop':
+        return Icons.cancel_outlined;
+      case 'task_output':
+        return Icons.output_outlined;
+      case 'send_message':
+        return Icons.send_outlined;
+      case 'brief':
+        return Icons.summarize_outlined;
+      case 'enter_plan_mode':
+        return Icons.assignment_outlined;
+      case 'exit_plan_mode':
+        return Icons.assignment_turned_in_outlined;
+      case 'ask_user_question':
+        return Icons.question_answer_outlined;
+      case 'list_mcp_resources':
+        return Icons.list_alt_outlined;
+      case 'read_mcp_resource':
+        return Icons.description_outlined;
+      case 'enter_worktree':
+        return Icons.call_split;
+      case 'exit_worktree':
+        return Icons.merge_type;
+      case 'schedule_cron':
+        return Icons.schedule;
+      case 'cron_create':
+        return Icons.alarm_add;
+      case 'cron_delete':
+        return Icons.alarm_off;
+      case 'cron_list':
+        return Icons.alarm;
+      case 'team_create':
+        return Icons.group_add_outlined;
+      case 'team_delete':
+        return Icons.group_remove_outlined;
+      case 'notebook_edit':
+        return Icons.menu_book_outlined;
+      case 'skill':
+        return Icons.psychology_outlined;
+      case 'lsp':
+        return Icons.analytics_outlined;
+      case 'config':
+        return Icons.settings_outlined;
+      case 'sleep':
+        return Icons.snooze;
+      case 'tool_search':
+        return Icons.manage_search;
       default:
         return Icons.build_circle;
     }
@@ -86,21 +159,100 @@ class _ToolCardState extends State<ToolCard>
 
   /// Friendly display name
   String _toolDisplayName() {
-    switch (widget.toolName.toLowerCase()) {
+    final name = widget.toolName.toLowerCase();
+    if (name.startsWith('mcp__')) {
+      final parts = widget.toolName.split('__');
+      if (parts.length >= 3) {
+        final server = parts[1];
+        final tool = parts.sublist(2).join('__');
+        return 'MCP: $server ($tool)';
+      }
+      return widget.toolName.replaceFirst('mcp__', 'MCP: ');
+    }
+    switch (name) {
       case 'bash':
         return 'Terminal';
+      case 'directory_briefing':
+        return 'Directory Scan';
       case 'file_read':
         return 'File Read';
       case 'file_write':
         return 'File Write';
-      case 'directory_briefing':
-        return 'Directory Scan';
+      case 'file_edit':
+        return 'File Edit';
+      case 'glob':
+        return 'Glob Finder';
+      case 'grep':
+        return 'Grep Search';
       case 'data_injector':
         return 'Data Injector';
       case 'notification_agent':
+      case 'notification':
         return 'Notification';
       case 'voice_munshi':
         return 'Voice Input';
+      case 'web_search':
+        return 'Web Search';
+      case 'web_fetch':
+        return 'Web Fetch';
+      case 'agent':
+        return 'Agent Orchestration';
+      case 'todo_write':
+        return 'Write TODO';
+      case 'task_create':
+        return 'Create Task';
+      case 'task_get':
+        return 'Get Task';
+      case 'task_update':
+        return 'Update Task';
+      case 'task_list':
+        return 'List Tasks';
+      case 'task_stop':
+        return 'Stop Task';
+      case 'task_output':
+        return 'Task Output';
+      case 'send_message':
+        return 'Send Message';
+      case 'brief':
+        return 'Briefing';
+      case 'enter_plan_mode':
+        return 'Enter Plan Mode';
+      case 'exit_plan_mode':
+        return 'Exit Plan Mode';
+      case 'ask_user_question':
+        return 'Ask Question';
+      case 'list_mcp_resources':
+        return 'List MCP Resources';
+      case 'read_mcp_resource':
+        return 'Read MCP Resource';
+      case 'enter_worktree':
+        return 'Enter Worktree';
+      case 'exit_worktree':
+        return 'Exit Worktree';
+      case 'schedule_cron':
+        return 'Schedule Cron';
+      case 'cron_create':
+        return 'Create Cron';
+      case 'cron_delete':
+        return 'Delete Cron';
+      case 'cron_list':
+        return 'List Crons';
+      case 'team_create':
+        return 'Create Team';
+      case 'team_delete':
+        return 'Delete Team';
+      case 'notebook_edit':
+        return 'Notebook Edit';
+      case 'skill':
+        return 'Load Skill';
+      case 'lsp':
+        return 'LSP Analysis';
+      case 'config':
+        return 'Configure Sandbox';
+      case 'sleep':
+        return 'Sleep / Delay';
+      case 'tool_search':
+        return 'Search Tools';
       default:
         return widget.toolName;
     }

@@ -29,6 +29,16 @@ import 'package:apex_lite/core/infrastructure/tools/send_message_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/brief_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/plan_mode_tools.dart';
 import 'package:apex_lite/core/infrastructure/tools/ask_user_question_tool.dart';
+import 'package:apex_lite/core/infrastructure/tools/mcp_tools.dart';
+import 'package:apex_lite/core/infrastructure/tools/worktree_tools.dart';
+import 'package:apex_lite/core/infrastructure/tools/cron_tools.dart';
+import 'package:apex_lite/core/infrastructure/tools/team_tools.dart';
+import 'package:apex_lite/core/infrastructure/tools/notebook_edit_tool.dart';
+import 'package:apex_lite/core/infrastructure/tools/skill_tool.dart';
+import 'package:apex_lite/core/infrastructure/tools/lsp_tool.dart';
+import 'package:apex_lite/core/infrastructure/tools/config_tool.dart';
+import 'package:apex_lite/core/infrastructure/tools/sleep_tool.dart';
+import 'package:apex_lite/core/infrastructure/tools/tool_search_tool.dart';
 import 'package:apex_lite/core/infrastructure/services/local_inference_service.dart';
 import 'package:apex_lite/core/infrastructure/services/session_manager.dart';
 import 'package:apex_lite/core/domain/entities/message.dart';
@@ -78,6 +88,10 @@ void main() async {
 
   final spectral = SpectralOps(workingDirectory: sandboxPath);
 
+  // Initialize Registries
+  McpRegistry.init(sandboxPath);
+  CronRegistry.init(spectral);
+
   // 4. Register ALL Tools
   router.registerTool(BashTool(spectral));
   router.registerTool(DirectoryBriefingTool(sandboxPath));
@@ -104,6 +118,24 @@ void main() async {
   router.registerTool(EnterPlanModeTool());
   router.registerTool(ExitPlanModeTool());
   router.registerTool(AskUserQuestionTool());
+
+  // Registrations for the 10 missing tools from the APEX TOOL PROTOCOL (bringing total tools to 35+ core/utilities)
+  router.registerTool(ListMcpResourcesTool());
+  router.registerTool(ReadMcpResourceTool());
+  router.registerTool(EnterWorktreeTool(spectral));
+  router.registerTool(ExitWorktreeTool(spectral));
+  router.registerTool(ScheduleCronTool());
+  router.registerTool(CronCreateTool());
+  router.registerTool(CronDeleteTool());
+  router.registerTool(CronListTool());
+  router.registerTool(TeamCreateTool());
+  router.registerTool(TeamDeleteTool());
+  router.registerTool(NotebookEditTool(sandboxPath));
+  router.registerTool(SkillTool(sandboxPath));
+  router.registerTool(LSPTool(sandboxPath));
+  router.registerTool(ConfigTool(sandboxPath));
+  router.registerTool(SleepTool());
+  router.registerTool(ToolSearchTool(() => router.registeredTools));
 
   final core = AetherCore(router: router, protocol: protocol);
 

@@ -1533,69 +1533,372 @@ class _ConsensusDialogState extends State<_ConsensusDialog>
   static const _moderateCommands = ['rm', 'mv', 'chmod', 'pip', 'npm', 'python'];
 
   _RiskLevel _classifyRisk(ToolRequest req) {
-    if (req.name == 'directory_briefing' || req.name == 'notification' || req.name == 'file_read') {
-      return _RiskLevel.safe;
-    }
-    // 🔱 DANGEROUS: Tools that modify system/files/execute destructive commands
-    if (req.name == 'file_write' || req.name == 'data_injector' || req.name == 'voice_munshi') {
-      return _RiskLevel.dangerous;
-    }
-    if (req.name == 'bash') {
+    final name = req.name.toLowerCase();
+    if (name == 'bash') {
       final cmd = (req.params['command'] ?? '').toString().trim();
       final firstWord = cmd.split(' ').first.split('/').last;
       if (_safeCommands.contains(firstWord)) return _RiskLevel.safe;
       if (_moderateCommands.contains(firstWord)) return _RiskLevel.moderate;
-      // 🔱 Unknown bash commands default to DANGEROUS
       return _RiskLevel.dangerous;
+    }
+    if (name == 'file_write' || name == 'file_edit' || name == 'data_injector' || name == 'voice_munshi') {
+      return _RiskLevel.dangerous;
+    }
+    if (name.startsWith('mcp__') ||
+        name == 'todo_write' ||
+        name == 'task_create' ||
+        name == 'task_update' ||
+        name == 'task_stop' ||
+        name == 'send_message' ||
+        name == 'enter_plan_mode' ||
+        name == 'enter_worktree' ||
+        name == 'exit_worktree' ||
+        name == 'schedule_cron' ||
+        name == 'cron_create' ||
+        name == 'cron_delete' ||
+        name == 'team_create' ||
+        name == 'team_delete' ||
+        name == 'notebook_edit' ||
+        name == 'config') {
+      return _RiskLevel.moderate;
     }
     return _RiskLevel.safe;
   }
 
   String _toolDisplayName(String name) {
-    switch (name) {
-      case 'bash': return 'Shell Command';
-      case 'directory_briefing': return 'Read Folder';
-      case 'data_injector': return 'Type Text';
-      case 'notification': return 'Send Notification';
-      default: return name;
+    final lowerName = name.toLowerCase();
+    if (lowerName.startsWith('mcp__')) {
+      final parts = name.split('__');
+      if (parts.length >= 3) {
+        final server = parts[1];
+        final tool = parts.sublist(2).join('__');
+        return 'MCP: $server ($tool)';
+      }
+      return name.replaceFirst('mcp__', 'MCP: ');
+    }
+    switch (lowerName) {
+      case 'bash':
+        return 'Terminal';
+      case 'directory_briefing':
+        return 'Directory Scan';
+      case 'file_read':
+        return 'File Read';
+      case 'file_write':
+        return 'File Write';
+      case 'file_edit':
+        return 'File Edit';
+      case 'glob':
+        return 'Glob Finder';
+      case 'grep':
+        return 'Grep Search';
+      case 'data_injector':
+        return 'Data Injector';
+      case 'notification_agent':
+      case 'notification':
+        return 'Notification';
+      case 'voice_munshi':
+        return 'Voice Input';
+      case 'web_search':
+        return 'Web Search';
+      case 'web_fetch':
+        return 'Web Fetch';
+      case 'agent':
+        return 'Agent Orchestration';
+      case 'todo_write':
+        return 'Write TODO';
+      case 'task_create':
+        return 'Create Task';
+      case 'task_get':
+        return 'Get Task';
+      case 'task_update':
+        return 'Update Task';
+      case 'task_list':
+        return 'List Tasks';
+      case 'task_stop':
+        return 'Stop Task';
+      case 'task_output':
+        return 'Task Output';
+      case 'send_message':
+        return 'Send Message';
+      case 'brief':
+        return 'Briefing';
+      case 'enter_plan_mode':
+        return 'Enter Plan Mode';
+      case 'exit_plan_mode':
+        return 'Exit Plan Mode';
+      case 'ask_user_question':
+        return 'Ask Question';
+      case 'list_mcp_resources':
+        return 'List MCP Resources';
+      case 'read_mcp_resource':
+        return 'Read MCP Resource';
+      case 'enter_worktree':
+        return 'Enter Worktree';
+      case 'exit_worktree':
+        return 'Exit Worktree';
+      case 'schedule_cron':
+        return 'Schedule Cron';
+      case 'cron_create':
+        return 'Create Cron';
+      case 'cron_delete':
+        return 'Delete Cron';
+      case 'cron_list':
+        return 'List Crons';
+      case 'team_create':
+        return 'Create Team';
+      case 'team_delete':
+        return 'Delete Team';
+      case 'notebook_edit':
+        return 'Notebook Edit';
+      case 'skill':
+        return 'Load Skill';
+      case 'lsp':
+        return 'LSP Analysis';
+      case 'config':
+        return 'Configure Sandbox';
+      case 'sleep':
+        return 'Sleep / Delay';
+      case 'tool_search':
+        return 'Search Tools';
+      default:
+        return name;
     }
   }
 
   String _toolDescription(ToolRequest req) {
-    switch (req.name) {
+    final name = req.name.toLowerCase();
+    if (name.startsWith('mcp__')) {
+      return 'Runs an MCP tool from a registered Model Context Protocol server.';
+    }
+    switch (name) {
       case 'bash':
-        return 'Runs a terminal command inside the secure sandbox. '
-               'Files outside the sandbox cannot be accessed.';
+        return 'Runs a terminal command inside the secure sandbox. Files outside the sandbox cannot be accessed.';
       case 'directory_briefing':
         return 'Reads the folder structure to understand your project files.';
+      case 'file_read':
+        return 'Reads the content of a file within the sandbox directory.';
+      case 'file_write':
+        return 'Writes or overwrites a file with the specified content inside the sandbox.';
+      case 'file_edit':
+        return 'Applies surgical edits/diffs to a target file inside the sandbox.';
+      case 'glob':
+        return 'Finds files matching wildcard pattern paths recursively.';
+      case 'grep':
+        return 'Searches for text patterns or regex matches inside files.';
       case 'data_injector':
-        return 'Types text into the currently active window.';
+        return 'Injects structured data or types text into the sandbox workspace.';
+      case 'notification_agent':
       case 'notification':
-        return 'Sends you a notification with results.';
+        return 'Triggers a system notification or notification bubble.';
+      case 'voice_munshi':
+        return 'Inputs voice recording audio or starts speech recognition.';
+      case 'web_search':
+        return 'Searches the web for relevant search engine queries.';
+      case 'web_fetch':
+        return 'Fetches and converts webpage content into Markdown formatting.';
+      case 'agent':
+        return 'Invokes a subagent recursively to delegate a subtask.';
+      case 'todo_write':
+        return 'Logs a developer task list entry or TODO item.';
+      case 'task_create':
+        return 'Launches an asynchronous background developer process/command.';
+      case 'task_get':
+        return 'Fetches the execution status of a background process.';
+      case 'task_update':
+        return 'Interacts with or updates a background task execution.';
+      case 'task_list':
+        return 'Lists all active or finished background process tasks.';
+      case 'task_stop':
+        return 'Terminates an active background process task.';
+      case 'task_output':
+        return 'Fetches the accumulated console stdout/stderr log of a task.';
+      case 'send_message':
+        return 'Sends a message to an active subagent conversation.';
+      case 'brief':
+        return 'Requests a concise developer dashboard briefing.';
+      case 'enter_plan_mode':
+        return 'Prepares the agent to lock in and formulate a design plan.';
+      case 'exit_plan_mode':
+        return 'Closes plan mode and proceeds with plan execution.';
+      case 'ask_user_question':
+        return 'Halts tool execution to ask a clarifying question to the user.';
+      case 'list_mcp_resources':
+        return 'Queries resources exposed by registered MCP servers.';
+      case 'read_mcp_resource':
+        return 'Retrieves the data contents of an MCP resource by URI.';
+      case 'enter_worktree':
+        return 'Switches the active sandbox environment to an isolated worktree branch directory.';
+      case 'exit_worktree':
+        return 'Restores the active sandbox environment path to the workspace root.';
+      case 'schedule_cron':
+        return 'Schedules or configures cron actions to run on intervals.';
+      case 'cron_create':
+        return 'Registers a scheduled task execution.';
+      case 'cron_delete':
+        return 'Unregisters a scheduled cron task by identifier.';
+      case 'cron_list':
+        return 'Lists all active or inactive scheduled cron tasks.';
+      case 'team_create':
+        return 'Creates and prepares a multi-agent swarm team workspace.';
+      case 'team_delete':
+        return 'Tears down and deletes a multi-agent team.';
+      case 'notebook_edit':
+        return 'Surgically inserts, modifies, or deletes cells in a Jupyter Notebook (.ipynb).';
+      case 'skill':
+        return 'Loads guideline definitions from custom developer SKILL.md guides.';
+      case 'lsp':
+        return 'Queries language server intelligence (definitions, hovers, syntax diagnostics).';
+      case 'config':
+        return 'Reads or updates local sandbox config parameters.';
+      case 'sleep':
+        return 'Triggers a temporary execution delay.';
+      case 'tool_search':
+        return 'Queries and discovers registered developer tools in the registry.';
       default:
         return 'Executes a tool action within the sandbox.';
     }
   }
 
   IconData _toolIcon(String name) {
-    switch (name) {
-      case 'bash': return Icons.terminal_rounded;
-      case 'directory_briefing': return Icons.folder_open_rounded;
-      case 'data_injector': return Icons.keyboard_rounded;
-      case 'notification': return Icons.notifications_active_rounded;
-      default: return Icons.extension_rounded;
+    final lowerName = name.toLowerCase();
+    if (lowerName.startsWith('mcp__')) {
+      return Icons.api;
+    }
+    switch (lowerName) {
+      case 'bash':
+        return Icons.terminal_rounded;
+      case 'directory_briefing':
+        return Icons.folder_open_rounded;
+      case 'file_read':
+        return Icons.description_outlined;
+      case 'file_write':
+        return Icons.edit_note_rounded;
+      case 'file_edit':
+        return Icons.edit_outlined;
+      case 'glob':
+        return Icons.travel_explore;
+      case 'grep':
+        return Icons.find_in_page_outlined;
+      case 'data_injector':
+        return Icons.keyboard_rounded;
+      case 'notification_agent':
+      case 'notification':
+        return Icons.notifications_active_rounded;
+      case 'voice_munshi':
+        return Icons.mic_rounded;
+      case 'web_search':
+        return Icons.search;
+      case 'web_fetch':
+        return Icons.download_rounded;
+      case 'agent':
+        return Icons.smart_toy_outlined;
+      case 'todo_write':
+        return Icons.playlist_add_check;
+      case 'task_create':
+        return Icons.add_task;
+      case 'task_get':
+        return Icons.assignment_outlined;
+      case 'task_update':
+        return Icons.assignment_turned_in_outlined;
+      case 'task_list':
+        return Icons.format_list_bulleted;
+      case 'task_stop':
+        return Icons.cancel_outlined;
+      case 'task_output':
+        return Icons.output_outlined;
+      case 'send_message':
+        return Icons.send_outlined;
+      case 'brief':
+        return Icons.summarize_outlined;
+      case 'enter_plan_mode':
+        return Icons.assignment_outlined;
+      case 'exit_plan_mode':
+        return Icons.assignment_turned_in_outlined;
+      case 'ask_user_question':
+        return Icons.question_answer_outlined;
+      case 'list_mcp_resources':
+        return Icons.list_alt_outlined;
+      case 'read_mcp_resource':
+        return Icons.description_outlined;
+      case 'enter_worktree':
+        return Icons.call_split;
+      case 'exit_worktree':
+        return Icons.merge_type;
+      case 'schedule_cron':
+        return Icons.schedule;
+      case 'cron_create':
+        return Icons.alarm_add;
+      case 'cron_delete':
+        return Icons.alarm_off;
+      case 'cron_list':
+        return Icons.alarm;
+      case 'team_create':
+        return Icons.group_add_outlined;
+      case 'team_delete':
+        return Icons.group_remove_outlined;
+      case 'notebook_edit':
+        return Icons.menu_book_outlined;
+      case 'skill':
+        return Icons.psychology_outlined;
+      case 'lsp':
+        return Icons.analytics_outlined;
+      case 'config':
+        return Icons.settings_outlined;
+      case 'sleep':
+        return Icons.snooze;
+      case 'tool_search':
+        return Icons.manage_search;
+      default:
+        return Icons.extension_rounded;
     }
   }
 
   String _getCommandPreview(ToolRequest req) {
-    if (req.name == 'bash') {
+    final name = req.name.toLowerCase();
+    if (name == 'bash') {
       return (req.params['command'] ?? 'unknown command').toString();
     }
-    if (req.name == 'directory_briefing') {
+    if (name == 'directory_briefing') {
       return 'Scan: ${req.params['path'] ?? 'current folder'}';
     }
-    if (req.name == 'notification') {
+    if (name == 'notification' || name == 'notification_agent') {
       return '📢 ${req.params['title'] ?? 'Notification'}';
+    }
+    if (name == 'file_read') {
+      return 'Read: ${req.params['path'] ?? ''}';
+    }
+    if (name == 'file_write') {
+      return 'Write: ${req.params['path'] ?? ''}';
+    }
+    if (name == 'file_edit') {
+      return 'Edit: ${req.params['path'] ?? ''}';
+    }
+    if (name == 'glob') {
+      return 'Glob: ${req.params['pattern'] ?? ''}';
+    }
+    if (name == 'grep') {
+      return 'Grep: "${req.params['query'] ?? ''}" in ${req.params['path'] ?? ''}';
+    }
+    if (name == 'web_search') {
+      return 'Search: "${req.params['query'] ?? ''}"';
+    }
+    if (name == 'web_fetch') {
+      return 'Fetch: ${req.params['url'] ?? ''}';
+    }
+    if (name == 'agent') {
+      return 'Subagent: ${req.params['prompt']?.toString().substring(0, 30) ?? ''}...';
+    }
+    if (name == 'task_create') {
+      return 'Run Task: ${req.params['command'] ?? ''}';
+    }
+    if (name == 'lsp') {
+      return 'LSP: ${req.params['action'] ?? ''} on ${req.params['path'] ?? ''}';
+    }
+    if (name == 'config') {
+      return 'Config: ${req.params['action'] ?? ''} key=${req.params['key'] ?? ''}';
+    }
+    if (name == 'sleep') {
+      return 'Sleep: ${req.params['seconds'] ?? '0'}s';
     }
     return req.params.entries.map((e) => '${e.key}: ${e.value}').join(', ');
   }

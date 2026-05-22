@@ -2,6 +2,8 @@ import '../../domain/entities/tool_entities.dart';
 import '../../domain/entities/tool_execution_record.dart';
 import '../../domain/interfaces/i_tool.dart';
 import '../security/sentry_purity.dart';
+import '../tools/mcp_tools.dart';
+
 
 class AgentRouter {
   final SentryPurity validator;
@@ -46,15 +48,19 @@ class AgentRouter {
   ///   { 'name': 'bash', 'description': '...', 'parameters': {...} }
   /// NOT the nested format from getToolDefinitionsForApi().
   List<Map<String, dynamic>> getToolDefinitionsFlat() {
-    return _tools.values.map((tool) {
+    final allTools = <ITool>[..._tools.values];
+    for (final mcpDef in McpRegistry.mcpTools.values) {
+      allTools.add(McpToolAdapter(mcpDef));
+    }
+    return allTools.map((tool) {
       final properties = <String, dynamic>{};
       final required = <String>[];
 
       final schema = tool.parameterSchema;
       if (schema.containsKey('properties')) {
-        final props = schema['properties'] as Map<String, dynamic>;
+        final props = Map<String, dynamic>.from(schema['properties'] as Map);
         for (final key in props.keys) {
-          final p = props[key] as Map<String, dynamic>;
+          final p = Map<String, dynamic>.from(props[key] as Map);
           // FLAT: only type + description — no deep nesting
           // E2B's 8:1 GQA compression loses track of deeply nested structures
           properties[key] = {
@@ -82,13 +88,17 @@ class AgentRouter {
   /// Generates tool definitions as a JSON list for API providers that support
   /// native function calling.
   List<Map<String, dynamic>> getToolDefinitionsForApi() {
-    return _tools.values.map((tool) {
+    final allTools = <ITool>[..._tools.values];
+    for (final mcpDef in McpRegistry.mcpTools.values) {
+      allTools.add(McpToolAdapter(mcpDef));
+    }
+    return allTools.map((tool) {
       final properties = <String, dynamic>{};
       final required = <String>[];
 
       final schema = tool.parameterSchema;
       if (schema.containsKey('properties')) {
-        final props = schema['properties'] as Map<String, dynamic>;
+        final props = Map<String, dynamic>.from(schema['properties'] as Map);
         for (final key in props.keys) {
           properties[key] = props[key];
         }
@@ -181,7 +191,13 @@ class AgentRouter {
   }
 
   Future<ToolResult> _executeSingle(ToolRequest request) async {
-    final tool = _tools[request.name];
+    ITool? tool = _tools[request.name];
+    if (tool == null && request.name.startsWith('mcp__')) {
+      final mcpDef = McpRegistry.mcpTools[request.name];
+      if (mcpDef != null) {
+        tool = McpToolAdapter(mcpDef);
+      }
+    }
     final stopwatch = Stopwatch()..start();
 
     ToolResult result;
@@ -189,7 +205,7 @@ class AgentRouter {
     if (tool == null) {
       // 🔱 KHARWAL ORIGINAL: Hallucinated Tool Guard with "Did you mean?"
       // 2B models sometimes invent tools. Give a helpful suggestion.
-      final available = _tools.keys.toList();
+      final available = [..._tools.keys, ...McpRegistry.mcpTools.keys];
       final suggestion = _findClosestTool(request.name, available);
       result = ToolResult(
         toolUseId: request.id,

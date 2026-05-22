@@ -5,6 +5,8 @@ import '../../domain/entities/tool_entities.dart';
 
 /// AskUserQuestion Tool: Interactively prompts the user for clarification.
 class AskUserQuestionTool implements ITool {
+  static Future<String> Function(String question, List<String>? options)? customProvider;
+
   @override
   String get name => 'ask_user_question';
 
@@ -49,6 +51,16 @@ class AskUserQuestionTool implements ITool {
       }
 
       final options = (params['options'] as List?)?.map((e) => e.toString()).toList();
+
+      if (customProvider != null) {
+        final answer = await customProvider!(question, options);
+        return ToolResult(
+          toolUseId: '',
+          content: jsonEncode({
+            'answer': answer,
+          }),
+        );
+      }
 
       final buffer = StringBuffer();
       buffer.writeln('\n==================================================');

@@ -72,6 +72,8 @@ class ChromeAura {
   static const String reset = '\x1b[0m';
   static const String hideCursor = '\x1b[?25l';
   static const String showCursor = '\x1b[?25h';
+  static const String alternateScreenBufferOn = '\x1b[?1049h';
+  static const String alternateScreenBufferOff = '\x1b[?1049l';
   static const String clearLine = '\x1b[2K';
   static const String clearScreen = '\x1b[2J';
   static const String cursorHome = '\x1b[1;1H';

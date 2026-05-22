@@ -50,6 +50,8 @@ class ViewportDimension {
   final int rows;
   const ViewportDimension(this.columns, this.rows);
 
+  int get innerWidth => (columns - 4).clamp(40, 200);
+
   @override
   String toString() => '${columns}x$rows';
 }

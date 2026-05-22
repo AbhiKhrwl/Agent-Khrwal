@@ -397,7 +397,19 @@ Future<Stream<InferenceEvent>> callDirectGroqModel(
     'model': model,
     'messages': messages,
     'stream': true,
+    'temperature': 0.6,
+    'top_p': 0.95,
   };
+
+  // Dynamically apply reasoning parameters for Qwen or other reasoning-capable models
+  if (model.toLowerCase().contains('qwen') || 
+      model.toLowerCase().contains('o1') || 
+      model.toLowerCase().contains('o3')) {
+    payload['max_completion_tokens'] = 4096;
+    payload['reasoning_effort'] = 'default';
+  } else {
+    payload['max_tokens'] = 4096;
+  }
 
   if (tools != null && tools.isNotEmpty) {
     final toolDeclarations = <Map<String, dynamic>>[];

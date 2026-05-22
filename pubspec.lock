@@ -90,7 +90,7 @@ packages:
     source: hosted
     version: "4.1.1"
   build_runner:
-    dependency: "direct main"
+    dependency: "direct dev"
     description:
       name: build_runner
       sha256: "1523ce62448ebac2c15a8ba5fbad8acac169788658a7dd2a1c2d9c2a9318b9a6"
@@ -961,7 +961,7 @@ packages:
     source: hosted
     version: "4.0.2"
   riverpod_generator:
-    dependency: "direct main"
+    dependency: "direct dev"
     description:
       name: riverpod_generator
       sha256: "6f9220534d7a353b53c875ea191a84d28cb4e52ac420a66a1bd7318329d977b0"

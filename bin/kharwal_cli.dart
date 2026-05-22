@@ -24,6 +24,8 @@ import 'package:apex_lite/core/infrastructure/tools/notification_agent_tool.dart
 import 'package:apex_lite/core/infrastructure/tools/voice_munshi_tool.dart';
 import 'package:apex_lite/core/infrastructure/prompts/kharwal_behavior.dart';
 import 'package:apex_lite/core/domain/interfaces/i_tool.dart';
+import 'package:apex_lite/cli/terminal_forge.dart';
+import 'package:apex_lite/cli/theme/chrome_aura.dart';
 
 
 /// 🔱 CLI Input Adapter Implementation
@@ -930,8 +932,8 @@ void displayPoolTable(List<ProviderConfig> pool) {
 }
 
 void main(List<String> args) async {
-  print('🔱 🔱 AGENT KHARWAL (Apex Lite) — HEADLESS CLI RUNTIME 🔱 🔱');
-  print('System initialized. Running in terminal mode.');
+  // 🔱 TerminalForge — Supreme CLI Rendering Engine
+  final forge = TerminalForge();
 
   final forceConfigure = args.contains('--configure') || args.contains('-c');
   
@@ -940,16 +942,16 @@ void main(List<String> args) async {
 
   if (activePool.isEmpty || forceConfigure) {
     if (forceConfigure) {
-      print('\x1B[33m🔄 Reconfiguration requested via CLI arguments.\x1B[0m');
+      print('${ChromeAura.celestial}⟳ Reconfiguration requested via CLI arguments.${ChromeAura.reset}');
     } else {
-      print('\x1B[33m⚠️ No saved configuration found. Starting setup wizard...\x1B[0m');
+      print('${ChromeAura.celestial}⚠ No saved configuration found. Starting setup wizard...${ChromeAura.reset}');
     }
     activePool = await runSetupWizard();
   }
 
   // Display loaded pool in a beautiful table
   displayPoolTable(activePool);
-  print('\x1B[33m💡 (To reconfigure at any time, run: dart bin/kharwal_cli.dart --configure)\x1B[0m\n');
+  print('${ChromeAura.mist}(To reconfigure at any time, run: dart bin/kharwal_cli.dart --configure)${ChromeAura.reset}\n');
   
   // 1. Setup a safe local workspace directory for CLI sandbox operations
   final sandboxPath = './apex_sandbox';
@@ -974,6 +976,16 @@ void main(List<String> args) async {
   }
   router.registerTool(NotificationAgentTool());
   router.registerTool(VoiceMunshiTool());
+
+  // 🔱 Ignite the TerminalForge with full luxury rendering
+  final activeModel = activePool.isNotEmpty ? activePool.first.model : 'unknown';
+  final activeProvider = activePool.isNotEmpty ? activePool.first.type : 'local';
+  forge.ignite(
+    modelName: activeModel,
+    provider: activeProvider,
+    toolNames: router.registeredTools.map((t) => t.name).toList(),
+    sandboxPath: sandboxPath,
+  );
 
   // Setup inference model with multi-provider failover
   Future<Stream<InferenceEvent>> callModel(List<Message> history) async {
@@ -1003,12 +1015,14 @@ void main(List<String> args) async {
           );
         }
       } catch (e) {
-        print('\x1B[33m\n⚠️ [Failover] Provider ${provider.type.toUpperCase()} (${provider.model}) failed: $e\x1B[0m');
         if (i < activePool.length - 1) {
           final nextProvider = activePool[i + 1];
-          print('\x1B[35m🔄 Switching to next provider in pool: ${nextProvider.type.toUpperCase()} (${nextProvider.model})...\x1B[0m');
+          forge.onFailover(
+            '${provider.type.toUpperCase()} (${provider.model})',
+            '${nextProvider.type.toUpperCase()} (${nextProvider.model})',
+          );
         } else {
-          print('\x1B[31m❌ All providers in the active pool failed!\x1B[0m');
+          forge.onFatalError('All providers in the active pool failed: $e');
           rethrow;
         }
       }
@@ -1019,8 +1033,7 @@ void main(List<String> args) async {
   final adapter = CLIInputAdapter();
   final history = <Message>[];
   
-  // Inject the KharwalBehavior system prompt (CLI-aware: tells model it's on desktop with cloud inference)
-  final activeModel = activePool.isNotEmpty ? activePool.first.model : 'unknown';
+  // Inject the KharwalBehavior system prompt (CLI-aware)
   final systemPrompt = KharwalBehavior.build(
     isAgentMode: true,
     cwd: sandboxPath,
@@ -1034,37 +1047,64 @@ void main(List<String> args) async {
   final core = AetherCore(
     router: router,
     protocol: protocol,
-    mode: ProtocolMode.semi, // Auto-execute safe commands, ask for risky ones (Guardian/Semi)
+    mode: ProtocolMode.semi,
   );
 
-  // 4. Force ChatMode to letsDo to enable autonomous agent execution loop
+  // Force ChatMode to letsDo to enable autonomous agent execution loop
   core.setChatMode(ChatMode.letsDo);
 
-  // 5. Monitor and print all AetherCore events in real-time in the terminal
+  // 🔱 Route all AetherCore events through TerminalForge
+  // State trackers for tool correlation
+  String? _lastToolName;
+  Map<String, dynamic>? _lastToolParams;
+
   core.eventStream.listen((event) {
     final type = event['type'];
     final data = event['data'];
 
-    if (type == 'chunk') {
-      stdout.write(data);
-    } else if (type == 'thought') {
-      stdout.write('\x1B[33m$data\x1B[0m'); // Reasoning chain in gold color
-    } else if (type == 'tool_start') {
-      print('\n⚙️  Running Tool: ${event['tool_name']} with params: ${event['params']}');
-    } else if (type == 'tool_result') {
-      final isError = event['is_error'] as bool? ?? false;
-      final color = isError ? '\x1B[31m' : '\x1B[32m';
-      print('$color   Result: $data\x1B[0m');
-    } else if (type == 'status') {
-      print('\x1B[36m\n⏳ [Status] $data\x1B[0m');
-    } else if (type == 'final') {
-      print('\n\n🤖 Agent Kharwal: $data');
-      stdout.write('\n👤 You: ');
-    } else if (type == 'error') {
-      print('\x1B[31m\n❌ Error: $data\x1B[0m');
+    switch (type) {
+      case 'chunk':
+        forge.onTextChunk(data.toString());
+        break;
+
+      case 'thought':
+        forge.onThought(data.toString());
+        break;
+
+      case 'tool_start':
+        _lastToolName = event['tool_name']?.toString() ?? 'unknown';
+        final rawParams = event['params'];
+        _lastToolParams = rawParams is Map<String, dynamic>
+            ? rawParams
+            : {'raw': rawParams.toString()};
+        forge.onToolStart(_lastToolName!, _lastToolParams!);
+        break;
+
+      case 'tool_result':
+        final isError = event['is_error'] as bool? ?? false;
+        forge.onToolResult(
+          _lastToolName ?? 'unknown',
+          _lastToolParams ?? {},
+          data.toString(),
+          isError,
+        );
+        break;
+
+      case 'status':
+        forge.onStatus(data.toString());
+        break;
+
+      case 'final':
+        forge.onFinalResponse(data.toString());
+        break;
+
+      case 'error':
+        forge.onError(data.toString());
+        break;
     }
   });
 
+  forge.printFirstPrompt();
   adapter.startListening();
   
   // Start the autonomous event loop
@@ -1074,3 +1114,4 @@ void main(List<String> args) async {
     callModel: callModel,
   );
 }
+

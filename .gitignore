@@ -76,3 +76,28 @@ apex_sandbox/
 .apex_lite_config.json
 release_info.json
 upload_response.json
+
+# Sensitive/Local-only folders
+cli_ui_x_lexuray/
+apex_tool_protocall/
+
+# Future Sensitive/Local-only folders
+brain_loop_shakti/
+*brain_loop_shakti/
+mcp_maakhn_protocol/
+*mcp_maakhn_protocol/
+plugin_duniya/
+*plugin_duniya/
+prompt_cache_jugad/
+*prompt_cache_jugad/
+rollback_aur_history/
+*rollback_aur_history/
+voice_katha/
+*voice_katha/
+command_funda/
+*command_funda/
+must_hona_hi_chaaye/
+*must_hona_hi_chaaye/
+HEART_SNATCH_EXTRACT/
+*HEART_SNATCH_EXTRACT/
+

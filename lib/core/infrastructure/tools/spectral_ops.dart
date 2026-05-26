@@ -4,6 +4,7 @@ import 'dart:async';
 import '../../domain/entities/tool_entities.dart';
 import '../services/process_utils.dart';
 import '../security/path_jailer.dart';
+import 'task_tools.dart';
 
 /// Sandboxed shell execution for Apex Lite.
 /// Advanced features:
@@ -92,7 +93,7 @@ class SpectralOps {
     }
   }
 
-  Future<SpectralResult> execute(String command) async {
+  Future<SpectralResult> execute(String command, {Duration? timeout}) async {
     Process? process;
     File? tempFile;
 
@@ -152,7 +153,7 @@ class SpectralOps {
       bool diskLimitHit = false;
 
       // Failsafe timer: if process hangs mid-stream, kill it
-      final failsafeTimer = Timer(foregroundBudget * 2, () {
+      final failsafeTimer = Timer((timeout ?? foregroundBudget) * 2, () {
         if (_activePids.contains(pid)) {
           ProcessUtils.treeKill(pid);
         }
@@ -179,7 +180,7 @@ class SpectralOps {
       }, onDone: () => stderrDone.complete());
 
       final exitCode = await process.exitCode.timeout(
-        foregroundBudget,
+        timeout ?? foregroundBudget,
         onTimeout: () async {
           await ProcessUtils.treeKill(pid);
           return -1;
@@ -271,6 +272,107 @@ class SpectralOps {
         }
       } catch (_) {}
       _reapOrphans();
+    }
+  }
+
+  /// 🔱 executeAsync: Spawns a background process, logs output in real-time,
+  /// and updates its structured task record upon completion.
+  Future<void> executeAsync(String command, String taskId, File outputFile) async {
+    try {
+      _reapOrphans();
+
+      // Enforce concurrent PID cap
+      if (_activePids.length >= maxConcurrentPids) {
+        final fileSink = outputFile.openWrite(mode: FileMode.append);
+        fileSink.writeln('Error: Concurrent process limit ($maxConcurrentPids) reached.');
+        await fileSink.flush();
+        await fileSink.close();
+        return;
+      }
+      
+      final cleanEnv = _scrubEnvironment();
+
+      final process = await Process.start(
+        _shell,
+        ['-c', command],
+        workingDirectory: workingDirectory,
+        environment: cleanEnv,
+        includeParentEnvironment: false,
+      );
+
+      final pid = process.pid;
+      _activePids.add(pid);
+      watchdog?.track(process);
+
+      final fileSink = outputFile.openWrite(mode: FileMode.append);
+      fileSink.writeln('[Background Process started with PID: $pid]');
+      
+      final stdoutSub = process.stdout.listen((data) {
+        fileSink.add(data);
+      });
+      final stderrSub = process.stderr.listen((data) {
+        fileSink.add(data);
+      });
+
+      process.exitCode.then((code) async {
+        _activePids.remove(pid);
+        await stdoutSub.cancel();
+        await stderrSub.cancel();
+
+        fileSink.writeln('\n[Process finished with exit code: $code]');
+        await fileSink.flush();
+        await fileSink.close();
+
+        // Update task status in .apex_tasks.json
+        try {
+          final tasks = TaskStoreHelper.readTasks(sandboxRoot);
+          final task = tasks[taskId];
+          if (task != null) {
+            task['status'] = 'done';
+            task['updated_at'] = DateTime.now().toIso8601String();
+            tasks[taskId] = task;
+            TaskStoreHelper.writeTasks(sandboxRoot, tasks);
+          }
+        } catch (_) {}
+      }).catchError((err) async {
+        _activePids.remove(pid);
+        await stdoutSub.cancel();
+        await stderrSub.cancel();
+
+        fileSink.writeln('\n[Process crashed: $err]');
+        await fileSink.flush();
+        await fileSink.close();
+
+        // Update task status in .apex_tasks.json
+        try {
+          final tasks = TaskStoreHelper.readTasks(sandboxRoot);
+          final task = tasks[taskId];
+          if (task != null) {
+            task['status'] = 'stopped';
+            task['updated_at'] = DateTime.now().toIso8601String();
+            tasks[taskId] = task;
+            TaskStoreHelper.writeTasks(sandboxRoot, tasks);
+          }
+        } catch (_) {}
+      });
+
+    } catch (e) {
+      final fileSink = outputFile.openWrite(mode: FileMode.append);
+      fileSink.writeln('Background Execution Error: $e');
+      await fileSink.flush();
+      await fileSink.close();
+      
+      // Update task status in .apex_tasks.json
+      try {
+        final tasks = TaskStoreHelper.readTasks(sandboxRoot);
+        final task = tasks[taskId];
+        if (task != null) {
+          task['status'] = 'stopped';
+          task['updated_at'] = DateTime.now().toIso8601String();
+          tasks[taskId] = task;
+          TaskStoreHelper.writeTasks(sandboxRoot, tasks);
+        }
+      } catch (_) {}
     }
   }
 

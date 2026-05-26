@@ -101,3 +101,24 @@ must_hona_hi_chaaye/
 HEART_SNATCH_EXTRACT/
 *HEART_SNATCH_EXTRACT/
 
+# General rule for all folders starting with ##
+\#\#*/
+
+# Newly added research folders starting with ##
+\#\#brain_loop_shakti/
+\#\#lsp_dnyan_kosh/
+\#\#magic_docs_auto_likhari/
+\#\#mcp_maakhn_protocol/
+\#\#memory_consolidator_dream/
+\#\#plugin_duniya/
+\#\#predictive_suggest_jodidar/
+\#\#prompt_cache_jugad/
+\#\#pty_persistent_chatter/
+\#\#redactor_safai_jugad/
+\#\#repl_bridge_sampark/
+\#\#rollback_aur_history/
+\#\#secret_guard_chowkidar/
+\#\#speculative_sandbox_jugad/
+\#\#subagent_chotu_loop/
+\#\#swarm_dal_shakti/
+\#\#voice_katha/

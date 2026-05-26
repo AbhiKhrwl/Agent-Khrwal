@@ -4,6 +4,7 @@ import 'package:path/path.dart' as p;
 import '../../domain/interfaces/i_tool.dart';
 import '../../domain/entities/tool_entities.dart';
 import '../security/path_jailer.dart';
+import 'file_edit_tool.dart';
 
 /// Sandboxed file writing with path jail enforcement.
 ///
@@ -141,6 +142,20 @@ class FileWriteTool implements ITool {
         );
       }
 
+      // 🔱 Rollback System: Create backup snapshot of existing file before overwriting
+      String? backupId;
+      if (file.existsSync()) {
+        try {
+          final originalContent = await file.readAsString();
+          backupId = await RollbackHelper.createBackup(
+            sandboxRoot,
+            fullPath,
+            originalContent,
+            'File overwrite (force=true)',
+          );
+        } catch (_) {}
+      }
+
       // Create parent directories
       final parentDir = file.parent;
       if (!parentDir.existsSync()) {
@@ -149,12 +164,14 @@ class FileWriteTool implements ITool {
 
       await file.writeAsString(content, flush: true);
 
+      final backupMsg = backupId != null ? ' [Backup ID: $backupId]' : '';
+
       return ToolResult(
         toolUseId: '',
         content:
-            'File written: $rawPath\n'
+            'File written: $rawPath$backupMsg\n'
             'Size: ${_formatSize(contentBytes)}\n'
-            '${force ? 'Overwritten existing file.' : 'Created new file.'}',
+            '${file.existsSync() ? 'Overwritten existing file.' : 'Created new file.'}',
       );
     } catch (e) {
       return ToolResult(

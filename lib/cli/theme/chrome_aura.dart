@@ -61,6 +61,11 @@ class ChromeAura {
   /// Active surface — hovered/selected items.
   static const String bgActive = '\x1b[48;2;35;40;52m';
 
+  static const String bgTrident = '\x1b[48;2;0;255;242m';   // INSERT
+  static const String bgPhantom = '\x1b[48;2;180;130;255m';  // COMMAND  
+  static const String bgEmber = '\x1b[48;2;255;160;50m';     // QUESTION
+  static const String bgChrome = '\x1b[48;2;192;192;192m';   // NORMAL
+
   // ═══════════════════════════════════════════════════════════════
   // 🔱 TEXT MODIFIERS
   // ═══════════════════════════════════════════════════════════════
@@ -116,6 +121,10 @@ class ChromeAura {
 
   /// Dim paint for muted/secondary content.
   static String whisper(String text) => '$dim$mist$text$reset';
+
+  /// Generate a mode badge: bold dark text on specific background.
+  static String modeBadge(String label, String bgColor) =>
+      '$bold\x1b[38;2;10;14;20m$bgColor $label $reset';
 
   /// Draw a horizontal rule spanning [width] columns.
   static String horizon(int width, {String color = chrome}) =>

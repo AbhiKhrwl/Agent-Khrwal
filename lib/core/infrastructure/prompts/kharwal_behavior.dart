@@ -16,6 +16,8 @@
 // sections minimal (total ~800 tokens) because every token in the
 // system prompt reduces available context for actual conversation.
 
+import 'package:apex_lite/core/infrastructure/prompts/prompt_cache_optimizer.dart';
+
 class KharwalBehavior {
   /// Build the complete behavioral guidance for the agent.
   ///
@@ -31,15 +33,26 @@ class KharwalBehavior {
     bool isCli = false,
     String? modelName,
   }) {
-    final sections = <String>[
+    // 1. Sort tool names alphabetically to ensure deterministic serialization
+    final sortedToolNames = List<String>.from(toolNames)..sort();
+
+    // 2. Anchor & Stable Prefix sections
+    final stableSections = <String>[
       isCli ? _coreIdentityCli : _coreIdentity,
       _honesty,
       if (isAgentMode) (isCli ? _workingStyleCli : _workingStyle),
-      if (isAgentMode && toolNames.isNotEmpty) _toolGuidance(toolNames),
+      if (isAgentMode && sortedToolNames.isNotEmpty) _toolGuidance(sortedToolNames),
       isCli ? _outputStyleCli : _outputStyle,
-      _contextInfo(cwd, isAgentMode, isCli: isCli, modelName: modelName),
     ];
-    return sections.join('\n\n');
+    final stableText = stableSections.join('\n\n');
+
+    // 3. Align stable prefix boundary to 1024 token/character limit
+    final paddedStableText = PromptCacheOptimizer.padToBoundary(stableText, 1024);
+
+    // 4. Dynamic Tail (changes on every turn or location shift)
+    final dynamicText = _contextInfo(cwd, isAgentMode, isCli: isCli, modelName: modelName);
+
+    return '$paddedStableText\n\n$dynamicText';
   }
 
   // ─── Section 1: Who are you? ─────────────────────────────────

@@ -1591,6 +1591,95 @@ class AetherCore {
     }
   }
 
+  Future<bool> compactHistory(
+    List<Message> history,
+    Future<Stream<InferenceEvent>> Function(List<Message> history) callModel,
+  ) async {
+    if (history.length < 5) {
+      logger.d('🔱 [ManualCompact] History too small (${history.length} messages) to compact.');
+      return false;
+    }
+    logger.d('🔱 [ManualCompact] Triggered manual compaction: ${history.length} messages');
+
+    // Save token count for telemetry logs
+    final beforeTokens = _estimateTokens(history);
+
+    // 1. Preserve system prompts (first 2 messages)
+    final systemPrompts = history
+        .where((m) => m.role == MessageRole.system)
+        .take(2)
+        .toList();
+
+    // 2. Split: aging (to summarize) + fresh (to keep verbatim)
+    // Keep the last 4 messages as "fresh" — they have active context
+    final freshCount = 4.clamp(0, history.length);
+    final agingMessages = history.sublist(0, history.length - freshCount);
+    final freshMessages = history.sublist(history.length - freshCount);
+
+    // 3. Build summary request
+    final agingText = agingMessages
+        .where((m) => !systemPrompts.any((s) => s.uuid == m.uuid))
+        .map((m) {
+      final role = m.role.name.toUpperCase();
+      final content = m.content.length > 500
+          ? '${m.content.substring(0, 500)}...'
+          : m.content;
+      return '[$role]: $content';
+    }).join('\n');
+
+    if (agingText.trim().isEmpty) return false;
+
+    // 4. Ask model to summarize (short inference, no tools)
+    final summaryPrompt = [
+      Message(
+        role: MessageRole.user,
+        content: 'Summarize this conversation in 4-5 bullet points. '
+            'Focus on: what was asked, what was done, errors fixed, files created, current task. '
+            'Keep file paths and specific technical details. Be concise.\n\n'
+            '$agingText',
+      ),
+    ];
+
+    String summary = '';
+    final summaryStream = await callModel(summaryPrompt);
+    await for (final event in summaryStream) {
+      if (event is TextToken) {
+        summary += event.token;
+      }
+    }
+
+    if (summary.trim().isEmpty) {
+      return false;
+    }
+
+    // 5. Rebuild history
+    history.clear();
+    history.addAll(systemPrompts);
+    history.add(Message(
+      role: MessageRole.system,
+      content: '[CONTEXT SUMMARY — Previous conversation summarized to save context]\n'
+          '$summary',
+      isCompacted: true,
+    ));
+    history.add(Message(
+      role: MessageRole.system,
+      content: 'This session continues from a summarized conversation. '
+          'Resume directly — do not acknowledge the summary or recap. '
+          'Continue working on the current task.',
+    ));
+    history.addAll(freshMessages);
+
+    final afterTokens = _estimateTokens(history);
+    logger.d('🔱 [ManualCompact] ✅ Compacted: ~$beforeTokens → ~$afterTokens tokens '
+        '(${history.length} messages, saved ~${beforeTokens - afterTokens} tokens)');
+
+    _eventController.add({
+      'type': 'status',
+      'data': 'Manual context compaction completed successfully.',
+    });
+    return true;
+  }
+
   /// Rough token estimation: 1 token ≈ 4 chars for English/mixed content.
   /// Includes message role overhead (~4 tokens per message).
   int _estimateTokens(List<Message> history) {

@@ -33,7 +33,9 @@ import 'package:apex_lite/core/infrastructure/tools/lsp_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/config_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/sleep_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/tool_search_tool.dart';
+import 'package:apex_lite/core/infrastructure/tools/rollback_tool.dart';
 import 'package:apex_lite/core/domain/entities/tool_entities.dart';
+import 'package:apex_lite/core/infrastructure/prompts/prompt_cache_optimizer.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -96,6 +98,7 @@ void main() {
     router.registerTool(ConfigTool(sandboxPath));
     router.registerTool(SleepTool());
     router.registerTool(ToolSearchTool(() => router.registeredTools));
+    router.registerTool(SpectralRollbackTool(sandboxPath));
   });
 
   tearDown(() {
@@ -337,5 +340,151 @@ void main() {
     expect(result.isError, isFalse);
     expect(result.content.contains('cron_create'), isTrue);
     expect(result.content.contains('schedule_cron'), isTrue);
+  });
+
+  test('APEX Phase 2: BashTool timeout limits and background process execution', () async {
+    final bashTool = router.registeredTools.firstWhere((t) => t.name == 'bash');
+
+    // 1. Timeout test (run command that sleeps longer than timeout)
+    final timeoutResult = await bashTool.run({
+      'command': 'sleep 5',
+      'timeout': 500,
+    });
+    expect(timeoutResult.isError, isTrue);
+    expect(timeoutResult.content.contains('timed out'), isTrue);
+
+    // 2. Background process execution test
+    final bgResult = await bashTool.run({
+      'command': 'echo "hello from background"',
+      'run_in_background': true,
+    });
+    expect(bgResult.isError, isFalse);
+    expect(bgResult.content.contains('Command is running in background'), isTrue);
+
+    final resData = jsonDecode(bgResult.content) as Map<String, dynamic>;
+    final taskId = resData['taskId'] as String;
+
+    // The background task registry file should exist
+    final tasksJsonFile = File('$sandboxPath/.apex_tasks.json');
+    expect(tasksJsonFile.existsSync(), isTrue);
+
+    // Poll until the background task is finished to prevent tearDown race conditions
+    int elapsed = 0;
+    while (elapsed < 3000) {
+      final tasksData = jsonDecode(tasksJsonFile.readAsStringSync()) as Map<String, dynamic>;
+      if (tasksData[taskId] != null && tasksData[taskId]['status'] != 'in_progress') {
+        break;
+      }
+      await Future.delayed(const Duration(milliseconds: 50));
+      elapsed += 50;
+    }
+
+    final finalTasksData = jsonDecode(tasksJsonFile.readAsStringSync()) as Map<String, dynamic>;
+    expect(finalTasksData[taskId]['status'], equals('done'));
+  });
+
+  test('APEX Phase 2: BashTool regex-based sed command interception', () async {
+    final bashTool = router.registeredTools.firstWhere((t) => t.name == 'bash');
+
+    final testFile = File('$sandboxPath/sed_test.txt');
+    testFile.writeAsStringSync('Hello, Old World!\nGoodbye, Old World!');
+
+    // Run sed command
+    final result = await bashTool.run({
+      'command': 'sed -i "" "s/Old/New/g" sed_test.txt',
+    });
+    expect(result.isError, isFalse);
+    expect(testFile.readAsStringSync(), equals('Hello, New World!\nGoodbye, New World!'));
+  });
+
+  test('APEX Phase 2: FileEditTool and FileWriteTool automatic rollback snapshotting', () async {
+    final fileWriteTool = router.registeredTools.firstWhere((t) => t.name == 'file_write');
+    final fileEditTool = router.registeredTools.firstWhere((t) => t.name == 'file_edit');
+    final rollbackTool = router.registeredTools.firstWhere((t) => t.name == 'rollback');
+
+    // 1. Create file first
+    final testFile = File('$sandboxPath/rollback_test.txt');
+    await fileWriteTool.run({
+      'path': 'rollback_test.txt',
+      'content': 'Original Content',
+    });
+
+    // 2. Edit file (should trigger rollback snapshotting)
+    await fileEditTool.run({
+      'path': 'rollback_test.txt',
+      'old_string': 'Original Content',
+      'new_string': 'Modified Content',
+    });
+
+    // 3. List backups
+    final listResult = await rollbackTool.run({'action': 'list'});
+    expect(listResult.isError, isFalse);
+    final listData = jsonDecode(listResult.content);
+    expect(listData['total'], greaterThanOrEqualTo(1));
+
+    final backupId = listData['backups'][0]['id'] as String;
+
+    // 4. Undo change
+    final undoResult = await rollbackTool.run({
+      'action': 'undo',
+      'backup_id': backupId,
+    });
+    expect(undoResult.isError, isFalse);
+    expect(testFile.readAsStringSync(), equals('Original Content'));
+  });
+
+  test('APEX Phase 2: WebFetchTool upgraded HTML-to-Markdown parsing', () async {
+    final webFetchTool = router.registeredTools.firstWhere((t) => t.name == 'web_fetch') as WebFetchTool;
+
+    const html = '''
+      <html>
+        <head><title>Test Page</title></head>
+        <body>
+          <header><h1>Skip this header</h1></header>
+          <div class="cookie-banner">Please accept cookies</div>
+          <div id="main-content">
+            <h1>My Title</h1>
+            <p>Welcome to <strong>agent-based</strong> tools.</p>
+            <table>
+              <thead>
+                <tr><th>Tool</th><th>Status</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Rollback</td><td>Active</td></tr>
+              </tbody>
+            </table>
+            <pre><code>some_code()</code></pre>
+            <ul>
+              <li>First item</li>
+              <li>Second item</li>
+            </ul>
+          </div>
+          <footer><p>Footer stuff</p></footer>
+        </body>
+      </html>
+    ''';
+
+    final markdown = webFetchTool.testConvertHtmlToMarkdown(html);
+
+    expect(markdown.contains('Skip this header'), isFalse);
+    expect(markdown.contains('Please accept cookies'), isFalse);
+    expect(markdown.contains('Footer stuff'), isFalse);
+    expect(markdown.contains('# My Title'), isTrue);
+    expect(markdown.contains('**agent-based**'), isTrue);
+    expect(markdown.contains('| Tool | Status |'), isTrue);
+    expect(markdown.contains('| --- | --- |'), isTrue);
+    expect(markdown.contains('| Rollback | Active |'), isTrue);
+    expect(markdown.contains('```'), isTrue);
+    expect(markdown.contains('* First item'), isTrue);
+  });
+
+  test('APEX Phase 2: Prompt Cache Optimization & Alignment', () {
+    const rawPrompt = 'You are Agent Kharwal, local AI coder.';
+    final padded1024 = PromptCacheOptimizer.padToBoundary(rawPrompt, 1024);
+    expect(padded1024.length % 1024, equals(0));
+    expect(padded1024.contains('CACHE_ALIGNMENT_PADDING'), isTrue);
+
+    final metrics = PromptCacheOptimizer.evaluateCachePerformance(1000, 800);
+    expect(metrics.hitRate, equals(80.0));
   });
 }

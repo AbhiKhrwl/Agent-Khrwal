@@ -39,6 +39,7 @@ import 'package:apex_lite/core/infrastructure/tools/lsp_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/config_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/sleep_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/tool_search_tool.dart';
+import 'package:apex_lite/core/infrastructure/tools/rollback_tool.dart';
 import 'package:apex_lite/core/infrastructure/services/local_inference_service.dart';
 import 'package:apex_lite/core/infrastructure/services/session_manager.dart';
 import 'package:apex_lite/core/domain/entities/message.dart';
@@ -136,6 +137,7 @@ void main() async {
   router.registerTool(ConfigTool(sandboxPath));
   router.registerTool(SleepTool());
   router.registerTool(ToolSearchTool(() => router.registeredTools));
+  router.registerTool(SpectralRollbackTool(sandboxPath));
 
   final core = AetherCore(router: router, protocol: protocol);
 

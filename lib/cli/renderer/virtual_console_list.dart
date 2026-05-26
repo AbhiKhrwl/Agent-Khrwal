@@ -243,13 +243,16 @@ class VirtualConsoleList {
 
   static int _getCharCellWidth(String char) {
     if (char.isEmpty) return 0;
-    final codePoint = char.codeUnitAt(0);
+    final codePoint = char.runes.first;
     if ((codePoint >= 0x4e00 && codePoint <= 0x9fff) ||
         (codePoint >= 0x3400 && codePoint <= 0x4dbf) ||
         (codePoint >= 0xf900 && codePoint <= 0xfaff)) {
       return 2;
     }
-    if (codePoint > 0x1f000) {
+    if (codePoint >= 0x1f000 && codePoint <= 0x1faff) {
+      return 2;
+    }
+    if (codePoint >= 0x2600 && codePoint <= 0x27bf) {
       return 2;
     }
     return 1;

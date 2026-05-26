@@ -14,6 +14,7 @@ import 'dart:io';
 import '../theme/chrome_aura.dart';
 import '../renderer/viewport_sentry.dart';
 
+@Deprecated('Use TerminalForge._drawStatusStripToBuffer() instead as FortuneStrip writes directly to stdout bypassing the double-buffered screen.')
 class FortuneStrip {
   final ViewportSentry viewport;
 

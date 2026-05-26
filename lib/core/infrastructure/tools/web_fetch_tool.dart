@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../../domain/interfaces/i_tool.dart';
 import '../../domain/entities/tool_entities.dart';
@@ -157,25 +156,84 @@ class WebFetchTool implements ITool {
   String _convertHtmlToMarkdown(String html) {
     var text = html;
 
-    // Remove Head, Style, Script, and SVG sections
-    text = text.replaceAll(RegExp(r'<head>[\s\S]*?<\/head>', caseSensitive: false), '');
-    text = text.replaceAll(RegExp(r'<style[\s\S]*?<\/style>', caseSensitive: false), '');
-    text = text.replaceAll(RegExp(r'<script[\s\S]*?<\/script>', caseSensitive: false), '');
-    text = text.replaceAll(RegExp(r'<svg[\s\S]*?<\/svg>', caseSensitive: false), '');
+    // 1. Remove non-content structural blocks
+    text = text.replaceAll(RegExp(r'<head\b[\s\S]*?<\/head>', caseSensitive: false), '');
+    text = text.replaceAll(RegExp(r'<style\b[\s\S]*?<\/style>', caseSensitive: false), '');
+    text = text.replaceAll(RegExp(r'<script\b[\s\S]*?<\/script>', caseSensitive: false), '');
+    text = text.replaceAll(RegExp(r'<svg\b[\s\S]*?<\/svg>', caseSensitive: false), '');
+    text = text.replaceAll(RegExp(r'<iframe\b[\s\S]*?<\/iframe>', caseSensitive: false), '');
+    text = text.replaceAll(RegExp(r'<noscript\b[\s\S]*?<\/noscript>', caseSensitive: false), '');
 
-    // Format Headings
-    text = text.replaceAllMapped(RegExp(r'<h1[^>]*>([\s\S]*?)<\/h1>', caseSensitive: false), (m) => '\n# ${m[1]}\n');
-    text = text.replaceAllMapped(RegExp(r'<h2[^>]*>([\s\S]*?)<\/h2>', caseSensitive: false), (m) => '\n## ${m[1]}\n');
-    text = text.replaceAllMapped(RegExp(r'<h3[^>]*>([\s\S]*?)<\/h3>', caseSensitive: false), (m) => '\n### ${m[1]}\n');
+    // 2. Remove typical boilerplate sections (headers, footers, sidebars, ads, cookie banners)
+    text = text.replaceAll(RegExp(r'<header\b[\s\S]*?<\/header>', caseSensitive: false), '');
+    text = text.replaceAll(RegExp(r'<footer\b[\s\S]*?<\/footer>', caseSensitive: false), '');
+    text = text.replaceAll(RegExp(r'<nav\b[\s\S]*?<\/nav>', caseSensitive: false), '');
+    text = text.replaceAll(RegExp(r'<aside\b[\s\S]*?<\/aside>', caseSensitive: false), '');
+    text = text.replaceAll(RegExp(r'''<div\b[^>]*(?:class|id)=["\'][^"\']*(?:cookie|banner|sidebar|footer|header|ad-container|social)[^"\']*["\'][\s\S]*?<\/div>''', caseSensitive: false), '');
 
-    // Format Lists and Paragraphs
-    text = text.replaceAllMapped(RegExp(r'<li[^>]*>([\s\S]*?)<\/li>', caseSensitive: false), (m) => '\n* ${m[1]}');
-    text = text.replaceAllMapped(RegExp(r'<p[^>]*>([\s\S]*?)<\/p>', caseSensitive: false), (m) => '\n${m[1]}\n');
+    // 3. Format pre & code blocks (do this before stripping tags)
+    text = text.replaceAllMapped(RegExp(r'<pre\b[^>]*>(?:\s*<code\b[^>]*>)?([\s\S]*?)(?:<\/code>\s*)?<\/pre>', caseSensitive: false), (m) => '\n```\n${m[1]?.trim()}\n```\n');
+    text = text.replaceAllMapped(RegExp(r'<code\b[^>]*>([\s\S]*?)<\/code>', caseSensitive: false), (m) => ' `${m[1]?.trim()}` ');
 
-    // Remove any remaining tags
+    // 4. Format Tables
+    // Replace <tr> with newlines, <th>/<td> with markdown cell dividers
+    text = text.replaceAllMapped(RegExp(r'<tr\b[^>]*>([\s\S]*?)<\/tr>', caseSensitive: false), (m) {
+      final cells = m[1] ?? '';
+      final isHeader = cells.contains(RegExp(r'<th\b', caseSensitive: false));
+      var mdRow = '|';
+      final cellMatches = RegExp(r'<(?:td|th)\b[^>]*>([\s\S]*?)<\/(?:td|th)\b>', caseSensitive: false).allMatches(cells);
+      for (final cellMatch in cellMatches) {
+        final cellContent = cellMatch.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '';
+        mdRow += ' $cellContent |';
+      }
+      if (isHeader && cellMatches.isNotEmpty) {
+        var sepRow = '\n|';
+        for (int i = 0; i < cellMatches.length; i++) {
+          sepRow += ' --- |';
+        }
+        return '\n$mdRow$sepRow';
+      }
+      return '\n$mdRow';
+    });
+    // Remove other table structure tags
+    text = text.replaceAll(RegExp(r'<\/?(?:table|thead|tbody|tfoot)\b[^>]*>', caseSensitive: false), '\n');
+
+    // 5. Format Headings
+    text = text.replaceAllMapped(RegExp(r'<h1\b[^>]*>([\s\S]*?)<\/h1>', caseSensitive: false), (m) => '\n\n# ${m[1]?.trim()}\n\n');
+    text = text.replaceAllMapped(RegExp(r'<h2\b[^>]*>([\s\S]*?)<\/h2>', caseSensitive: false), (m) => '\n\n## ${m[1]?.trim()}\n\n');
+    text = text.replaceAllMapped(RegExp(r'<h3\b[^>]*>([\s\S]*?)<\/h3>', caseSensitive: false), (m) => '\n\n### ${m[1]?.trim()}\n\n');
+    text = text.replaceAllMapped(RegExp(r'<h4\b[^>]*>([\s\S]*?)<\/h4>', caseSensitive: false), (m) => '\n\n#### ${m[1]?.trim()}\n\n');
+
+    // 6. Format Paragraphs, Lists & Blockquotes
+    text = text.replaceAllMapped(RegExp(r'<p\b[^>]*>([\s\S]*?)<\/p>', caseSensitive: false), (m) => '\n\n${m[1]?.trim()}\n\n');
+    text = text.replaceAllMapped(RegExp(r'<li\b[^>]*>([\s\S]*?)<\/li>', caseSensitive: false), (m) => '\n* ${m[1]?.trim()}');
+    text = text.replaceAllMapped(RegExp(r'<blockquote\b[^>]*>([\s\S]*?)<\/blockquote>', caseSensitive: false), (m) => '\n\n> ${m[1]?.trim()}\n\n');
+
+    // 7. Format formatting tags (bold, italics)
+    text = text.replaceAllMapped(RegExp(r'<(?:strong|b)\b[^>]*>([\s\S]*?)<\/(?:strong|b)\b>', caseSensitive: false), (m) => '**${m[1]?.trim()}**');
+    text = text.replaceAllMapped(RegExp(r'<(?:em|i)\b[^>]*>([\s\S]*?)<\/(?:em|i)\b>', caseSensitive: false), (m) => '*${m[1]?.trim()}*');
+
+    // 8. Format Links & Images
+    text = text.replaceAllMapped(RegExp(r'''<a\b[^>]*href=["\']([^"\']+)["\'][^>]*>([\s\S]*?)<\/a>''', caseSensitive: false), (m) {
+      final url = m[1] ?? '';
+      final linkText = m[2]?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '';
+      if (linkText.isEmpty) return '';
+      return '[$linkText]($url)';
+    });
+    text = text.replaceAllMapped(RegExp(r'''<img\b[^>]*(?:src=["\']([^"\']+)["\'][^>]*alt=["\']([^"\']*)["\']|alt=["\']([^"\']*)["\'][^>]*src=["\']([^"\']+)["\'])[^>]*>'''), (m) {
+      final src = m[1] ?? m[4] ?? '';
+      final alt = m[2] ?? m[3] ?? 'image';
+      return '![$alt]($src)';
+    });
+
+    // 9. Line breaks & HRs
+    text = text.replaceAll(RegExp(r'<br\s*\/?>', caseSensitive: false), '\n');
+    text = text.replaceAll(RegExp(r'<hr\s*\/?>', caseSensitive: false), '\n---\n');
+
+    // 10. Strip remaining HTML tags
     text = text.replaceAll(RegExp(r'<[^>]*>'), '');
 
-    // Normalize spacing and HTML entities
+    // 11. Normalize spaces, newlines and common HTML entities
     text = text
         .replaceAll('&amp;', '&')
         .replaceAll('&quot;', '"')
@@ -228,4 +286,7 @@ class WebFetchTool implements ITool {
 
     return '--- SEMANTIC EXTRACT FOR PROMPT: "$filterPrompt" ---\n\n' + matches.join('\n');
   }
+
+  /// Expose the HTML-to-Markdown parser for testing.
+  String testConvertHtmlToMarkdown(String html) => _convertHtmlToMarkdown(html);
 }

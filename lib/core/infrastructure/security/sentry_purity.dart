@@ -32,6 +32,18 @@ class SentryPurity {
         return ValidationResult(isAllowed: false, reason: metaViolation);
       }
 
+      // 🔱 Validate custom timeout
+      final timeoutRaw = request.params['timeout'];
+      if (timeoutRaw != null) {
+        final timeout = int.tryParse(timeoutRaw.toString());
+        if (timeout == null || timeout <= 0 || timeout > 600000) {
+          return ValidationResult(
+            isAllowed: false,
+            reason: 'Security Violation: Timeout must be a positive integer <= 600000ms (10 minutes).',
+          );
+        }
+      }
+
       final tokens = command.split(RegExp(r'\s+'));
       for (final token in tokens) {
         if (token.startsWith('-') || token.length < 2) continue;
@@ -53,6 +65,20 @@ class SentryPurity {
           return ValidationResult(
             isAllowed: false,
             reason: 'Blocked operation: "$op".',
+          );
+        }
+      }
+    } else if (request.name == 'rollback') {
+      final action = (request.params['action'] as String?) ?? '';
+      if (action == 'undo') {
+        final backupId = (request.params['backup_id'] as String?) ?? '';
+        if (backupId.isEmpty) {
+          return ValidationResult(isAllowed: false, reason: 'Parameter "backup_id" is required for undo.');
+        }
+        if (backupId.contains('..') || backupId.contains('/') || backupId.contains('\\')) {
+          return ValidationResult(
+            isAllowed: false,
+            reason: 'Security Violation: Unsafe backup ID "$backupId".',
           );
         }
       }

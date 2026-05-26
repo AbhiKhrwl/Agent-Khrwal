@@ -50,19 +50,19 @@ class DoubleBufferedScreen {
   /// Reallocates buffers to a new terminal size without losing previous contents.
   void resize(int newWidth, int newHeight) {
     if (newWidth == width && newHeight == height) return;
-
-    final oldFront = _frontBuffer;
-    final oldWidth = width;
-    final oldHeight = height;
-
     width = newWidth;
     height = newHeight;
     _allocateBuffers();
+  }
 
-    // Copy old content where applicable
-    for (var y = 0; y < height && y < oldHeight; y++) {
-      for (var x = 0; x < width && x < oldWidth; x++) {
-        _frontBuffer[y][x].copyFrom(oldFront[y][x]);
+  /// Clears both front and back buffers to force a full redraw.
+  void reset() {
+    clear();
+    for (var y = 0; y < height; y++) {
+      for (var x = 0; x < width; x++) {
+        _backBuffer[y][x].char = ' ';
+        _backBuffer[y][x].style = '';
+        _backBuffer[y][x].width = 1;
       }
     }
   }
@@ -195,7 +195,7 @@ class DoubleBufferedScreen {
   /// Helper to detect CJK wide characters.
   int _getCharacterCellWidth(String char) {
     if (char.isEmpty) return 0;
-    final codePoint = char.codeUnitAt(0);
+    final codePoint = char.runes.first;
 
     // CJK range matching (ideographs, compatibility, extension blocks)
     if ((codePoint >= 0x4e00 && codePoint <= 0x9fff) ||
@@ -204,7 +204,10 @@ class DoubleBufferedScreen {
       return 2;
     }
     // Emojis and other special symbols (rudimentary CJK/symbol detection)
-    if (codePoint > 0x1f000) {
+    if (codePoint >= 0x1f000 && codePoint <= 0x1faff) {
+      return 2;
+    }
+    if (codePoint >= 0x2600 && codePoint <= 0x27bf) {
       return 2;
     }
     return 1;

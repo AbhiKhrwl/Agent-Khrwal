@@ -123,6 +123,14 @@ class FileEditTool implements ITool {
         );
       }
 
+      // 🔱 Rollback System: Create backup snapshot before modifying the file
+      final backupId = await RollbackHelper.createBackup(
+        sandboxRoot,
+        fullPath,
+        content,
+        'File edit: replaced "${oldString.length > 25 ? "${oldString.substring(0, 22)}..." : oldString}"',
+      );
+
       final replaceAll = params['replace_all'] == true || params['replace_all'] == 'true';
       final updatedContent = replaceAll
           ? content.replaceAll(oldString, newString)
@@ -130,9 +138,11 @@ class FileEditTool implements ITool {
 
       await file.writeAsString(updatedContent, flush: true);
 
+      final backupMsg = backupId != null ? ' [Backup ID: $backupId]' : '';
+
       return ToolResult(
         toolUseId: '',
-        content: 'File surgically edited successfully: $rawPath\n'
+        content: 'File surgically edited successfully: $rawPath$backupMsg\n'
             'Replaced ${replaceAll ? "all instances" : "first instance"} of:\n'
             '<<< OLD\n$oldString\n===\n>>> NEW\n$newString\n>>>',
       );
@@ -143,6 +153,54 @@ class FileEditTool implements ITool {
         isError: true,
         errorType: ToolErrorType.execution,
       );
+    }
+  }
+}
+
+/// 🔱 RollbackHelper: Manages local backup snapshots in the .apex_rollback/ directory
+class RollbackHelper {
+  static Map<String, dynamic> readIndex(String sandboxRoot) {
+    try {
+      final file = File(p.join(sandboxRoot, '.apex_rollback', 'index.json'));
+      if (!file.existsSync()) return {};
+      final text = file.readAsStringSync();
+      return Map<String, dynamic>.from(jsonDecode(text));
+    } catch (_) {
+      return {};
+    }
+  }
+
+  static void writeIndex(String sandboxRoot, Map<String, dynamic> index) {
+    try {
+      final dir = Directory(p.join(sandboxRoot, '.apex_rollback'));
+      if (!dir.existsSync()) dir.createSync(recursive: true);
+      final file = File(p.join(dir.path, 'index.json'));
+      file.writeAsStringSync(jsonEncode(index), flush: true);
+    } catch (_) {}
+  }
+
+  static Future<String?> createBackup(String sandboxRoot, String fullFilePath, String content, String description) async {
+    try {
+      final relativePath = p.relative(fullFilePath, from: sandboxRoot);
+      final backupId = 'backup_${DateTime.now().millisecondsSinceEpoch}_${p.basename(fullFilePath)}';
+      
+      final index = readIndex(sandboxRoot);
+      final backupDir = Directory(p.join(sandboxRoot, '.apex_rollback'));
+      if (!backupDir.existsSync()) backupDir.createSync(recursive: true);
+
+      final backupFile = File(p.join(backupDir.path, backupId));
+      await backupFile.writeAsString(content, flush: true);
+
+      index[backupId] = {
+        'id': backupId,
+        'filePath': relativePath,
+        'timestamp': DateTime.now().toIso8601String(),
+        'description': description,
+      };
+      writeIndex(sandboxRoot, index);
+      return backupId;
+    } catch (_) {
+      return null;
     }
   }
 }

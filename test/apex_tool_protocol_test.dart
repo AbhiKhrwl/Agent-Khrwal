@@ -36,6 +36,8 @@ import 'package:apex_lite/core/infrastructure/tools/tool_search_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/rollback_tool.dart';
 import 'package:apex_lite/core/domain/entities/tool_entities.dart';
 import 'package:apex_lite/core/infrastructure/prompts/prompt_cache_optimizer.dart';
+import 'package:apex_lite/core/infrastructure/services/secret_guard_service.dart';
+import 'package:apex_lite/core/infrastructure/services/persistent_shell_manager.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -90,8 +92,9 @@ void main() {
     router.registerTool(CronCreateTool());
     router.registerTool(CronDeleteTool());
     router.registerTool(CronListTool());
-    router.registerTool(TeamCreateTool());
-    router.registerTool(TeamDeleteTool());
+    router.registerTool(TeamCreateTool(sandboxPath));
+    router.registerTool(TeamDeleteTool(sandboxPath));
+    router.registerTool(TeamJoinTool(sandboxPath));
     router.registerTool(NotebookEditTool(sandboxPath));
     router.registerTool(SkillTool(sandboxPath));
     router.registerTool(LSPTool(sandboxPath));
@@ -124,6 +127,7 @@ void main() {
     expect(toolNames.contains('cron_list'), isTrue);
     expect(toolNames.contains('team_create'), isTrue);
     expect(toolNames.contains('team_delete'), isTrue);
+    expect(toolNames.contains('team_join'), isTrue);
     expect(toolNames.contains('notebook_edit'), isTrue);
     expect(toolNames.contains('skill'), isTrue);
     expect(toolNames.contains('lsp'), isTrue);
@@ -230,6 +234,15 @@ void main() {
     });
     expect(createResult.isError, isFalse);
     expect(TeamRegistry.teams.any((t) => t.name == 'marketing_swarm'), isTrue);
+
+    final joinTool = router.registeredTools.firstWhere((t) => t.name == 'team_join');
+    final joinResult = await joinTool.run({
+      'team_name': 'marketing_swarm',
+      'name': 'seo_agent',
+      'agent_type': 'writer',
+      'model': 'gemini-2.5-flash',
+    });
+    expect(joinResult.isError, isFalse);
 
     final deleteTool = router.registeredTools.firstWhere((t) => t.name == 'team_delete');
     final deleteResult = await deleteTool.run({'name': 'marketing_swarm'});
@@ -486,5 +499,48 @@ void main() {
 
     final metrics = PromptCacheOptimizer.evaluateCachePerformance(1000, 800);
     expect(metrics.hitRate, equals(80.0));
+  });
+
+  test('APEX Phase 2: local secret scanner & redaction engine', () {
+    final guard = SecretGuardService();
+    final envContent = '''
+AWS_KEY="AKIAIOSFODNN7EXAMPLE"
+TOKEN='ghp_99xYyZz1234567890aBcDeFgHiJkLmNoPqRs'
+''';
+    final threats = guard.scan(envContent);
+    expect(threats.any((t) => t.ruleId == 'aws-access-token'), isTrue);
+    expect(threats.any((t) => t.ruleId == 'github-pat'), isTrue);
+
+    final redacted = guard.redact(envContent);
+    expect(redacted.contains('AKIAIOSFODNN7EXAMPLE'), isFalse);
+    expect(redacted.contains('ghp_99xYyZz1234567890aBcDeFgHiJkLmNoPqRs'), isFalse);
+    expect(redacted.contains('AWS_KEY="[REDACTED]"'), isTrue);
+    expect(redacted.contains("TOKEN='[REDACTED]'"), isTrue);
+  });
+
+  test('APEX Phase 2: PersistentShellManager and watchdog prompt sniffing', () async {
+    final logFile = File('$sandboxPath/test-watchdog.log');
+    final manager = PersistentShellManager(
+      taskId: 'test-watchdog-task',
+      command: Platform.isWindows ? 'cmd' : 'bash',
+      arguments: Platform.isWindows
+          ? ['/c', 'echo Overwrite? (y/n) & timeout /t 10']
+          : ['-c', 'echo "Overwrite? (y/n)"; sleep 10'],
+      workingDir: sandboxPath,
+      logFilePath: logFile.path,
+      checkInterval: const Duration(milliseconds: 100),
+      stallThreshold: const Duration(milliseconds: 200),
+    );
+
+    await manager.start();
+
+    // Give it a short moment to write the stdout and trigger watchdog
+    await Future.delayed(const Duration(milliseconds: 800));
+
+    manager.kill();
+
+    expect(logFile.existsSync(), isTrue);
+    final logContent = logFile.readAsStringSync();
+    expect(logContent.contains('Overwrite?'), isTrue);
   });
 }

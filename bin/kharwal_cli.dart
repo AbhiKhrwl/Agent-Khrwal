@@ -33,6 +33,8 @@ import 'package:apex_lite/core/infrastructure/tools/mcp_tools.dart';
 import 'package:apex_lite/core/infrastructure/tools/worktree_tools.dart';
 import 'package:apex_lite/core/infrastructure/tools/cron_tools.dart';
 import 'package:apex_lite/core/infrastructure/tools/team_tools.dart';
+import 'package:apex_lite/core/infrastructure/services/swarm_team_manager.dart';
+import 'package:apex_lite/core/infrastructure/services/secret_guard_service.dart';
 import 'package:apex_lite/core/infrastructure/tools/notebook_edit_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/skill_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/lsp_tool.dart';
@@ -48,6 +50,7 @@ import 'package:apex_lite/cli/theme/chrome_aura.dart';
 import 'package:apex_lite/cli/cli_input_adapter.dart';
 import 'package:apex_lite/cli/services/config_manager.dart';
 import 'package:apex_lite/cli/services/inference_bridges.dart';
+import 'package:apex_lite/cli/services/plugin_manager.dart';
 
 void main(List<String> args) async {
   // 🔱 TerminalForge — Supreme CLI Rendering Engine
@@ -89,6 +92,8 @@ void main(List<String> args) async {
   final router = AgentRouter(validator: validator);
   final protocol = CipherProtocol();
   final spectral = SpectralOps(workingDirectory: sandboxPath);
+  final swarmManager = SwarmTeamManager(apexConfigDir: '$sandboxPath/.apex_config');
+  final secretGuard = SecretGuardService();
 
   // Initialize Registries
   McpRegistry.init(sandboxPath);
@@ -132,8 +137,9 @@ void main(List<String> args) async {
   router.registerTool(CronCreateTool());
   router.registerTool(CronDeleteTool());
   router.registerTool(CronListTool());
-  router.registerTool(TeamCreateTool());
-  router.registerTool(TeamDeleteTool());
+  router.registerTool(TeamCreateTool(sandboxPath));
+  router.registerTool(TeamDeleteTool(sandboxPath));
+  router.registerTool(TeamJoinTool(sandboxPath));
   router.registerTool(NotebookEditTool(sandboxPath));
   router.registerTool(SkillTool(sandboxPath));
   router.registerTool(LSPTool(sandboxPath));
@@ -163,19 +169,47 @@ void main(List<String> args) async {
 
   // Setup inference model with multi-provider failover
   Future<Stream<InferenceEvent>> callModel(List<Message> history) async {
+    final redactedHistory = <Message>[];
+    final Set<String> foundLabels = {};
+
+    for (final message in history) {
+      final threats = secretGuard.scan(message.content);
+      if (threats.isNotEmpty) {
+        for (final match in threats) {
+          foundLabels.add(match.label);
+        }
+        final redactedContent = secretGuard.redact(message.content);
+        redactedHistory.add(message.copyWith(content: redactedContent));
+      } else {
+        redactedHistory.add(message);
+      }
+    }
+
+    if (foundLabels.isNotEmpty) {
+      print('\n🔱 [CHOWKIDAR] Intercepted & Redacted Secrets: ${foundLabels.join(", ")}');
+    }
+
     for (int i = 0; i < activePool.length; i++) {
       final provider = activePool[i];
       try {
         if (provider.type == 'gemini') {
           return await callDirectGeminiModel(
-            history,
+            redactedHistory,
             provider.apiKey,
             provider.model,
             tools: router.registeredTools,
           );
         } else if (provider.type == 'groq') {
           return await callDirectGroqModel(
-            history,
+            redactedHistory,
+            provider.apiKey,
+            provider.model,
+            tools: router.registeredTools,
+            onStatus: (status) => forge.onStatus(status),
+          );
+        } else if (provider.type == 'nvidia') {
+          return await callDirectNvidiaModel(
+            redactedHistory,
             provider.apiKey,
             provider.model,
             tools: router.registeredTools,
@@ -183,7 +217,7 @@ void main(List<String> args) async {
           );
         } else if (provider.type == 'ollama') {
           return await callLocalOllamaModel(
-            history,
+            redactedHistory,
             provider.baseUrl,
             provider.model,
             tools: router.registeredTools,
@@ -234,6 +268,39 @@ void main(List<String> args) async {
 
   // Force ChatMode to letsDo to enable autonomous agent execution loop
   core.setChatMode(ChatMode.letsDo);
+
+  // 🔱 Dynamic Plugin and Hook Engine Initialization
+  final userHome = Platform.isWindows
+      ? Platform.environment['USERPROFILE']
+      : Platform.environment['HOME'];
+  final userPluginsPath = '$userHome/.apex_lite/plugins';
+  final builtInPluginsPath = './##plugin_duniya/examples';
+
+  // Ensure directories exist
+  try {
+    Directory(userPluginsPath).createSync(recursive: true);
+    Directory(builtInPluginsPath).createSync(recursive: true);
+  } catch (_) {}
+
+  final pluginLoader = PluginLoader(
+    pluginsDirPath: userPluginsPath,
+    builtInDirPath: builtInPluginsPath,
+    context: {
+      'registry': adapter.registry,
+      'adapter': adapter,
+      'forge': forge,
+      'core': core,
+    },
+  );
+
+  // Wire hook manager and execute load
+  router.hooks = pluginLoader.hookManager;
+
+  // 🔱 ACTIVATE KEYBOARD RAW-MODE LISTENER BEFORE LOADING PLUGINS
+  // Without this, the TUI consent prompt blocks indefinitely as stdin key events are not listened to!
+  adapter.startListening();
+
+  await pluginLoader.loadPlugins();
 
   forge.bindExecutionContext(
     core: core,
@@ -293,7 +360,6 @@ void main(List<String> args) async {
   });
 
   forge.printFirstPrompt();
-  adapter.startListening();
 
   // Start the autonomous event loop
   try {
@@ -304,6 +370,7 @@ void main(List<String> args) async {
     );
   } finally {
     // 🔱 Ensure terminal state and spawned subprocesses are cleanly shut down
+    await swarmManager.runSessionCleanup();
     await McpRegistry.shutdown();
     adapter.dispose();
     forge.dispose();

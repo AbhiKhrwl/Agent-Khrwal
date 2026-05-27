@@ -660,6 +660,246 @@ Future<Stream<InferenceEvent>> callDirectGroqModel(
 
 /// 🔱 Ollama / Local Inference Bridge
 /// Supports Ollama's native tool calling format.
+
+Future<Stream<InferenceEvent>> callDirectNvidiaModel(
+  List<Message> history,
+  String apiKey,
+  String model, {
+  List<ITool>? tools,
+  void Function(String)? onStatus,
+}) async {
+  final controller = StreamController<InferenceEvent>();
+
+  final messages = <Map<String, dynamic>>[];
+  for (final m in history) {
+    if (m.role == MessageRole.tool) {
+      messages.add({
+        'role': 'tool',
+        'content': m.content,
+        'tool_call_id': m.toolUseId ?? m.metadata['tool_name'] ?? 'call',
+      });
+    } else if (m.role == MessageRole.assistant) {
+      final msg = <String, dynamic>{'role': 'assistant', 'content': m.content};
+      final assistantIdx = history.indexOf(m);
+      if (assistantIdx + 1 < history.length &&
+          history[assistantIdx + 1].role == MessageRole.tool) {
+        final toolCalls = <Map<String, dynamic>>[];
+        int j = assistantIdx + 1;
+        while (j < history.length && history[j].role == MessageRole.tool) {
+          final toolMsg = history[j];
+          final toolName =
+              toolMsg.metadata['tool_name'] as String? ?? 'function';
+          final toolArgs =
+              toolMsg.metadata['args'] as Map<String, dynamic>? ?? {};
+          toolCalls.add({
+            'id': toolMsg.toolUseId ?? toolName,
+            'type': 'function',
+            'function': {'name': toolName, 'arguments': json.encode(toolArgs)},
+          });
+          j++;
+        }
+        if (toolCalls.isNotEmpty) {
+          msg['tool_calls'] = toolCalls;
+          if (m.content.trim().isEmpty) msg['content'] = null;
+        }
+      }
+      messages.add(msg);
+    } else {
+      messages.add({
+        'role': m.role == MessageRole.system ? 'system' : 'user',
+        'content': m.content,
+      });
+    }
+  }
+
+  final url = Uri.parse('https://integrate.api.nvidia.com/v1/chat/completions');
+
+  final payload = <String, dynamic>{
+    'model': model,
+    'messages': messages,
+    'stream': true,
+    'temperature': 0.6,
+    'top_p': 0.95,
+  };
+
+  final modelLower = model.toLowerCase();
+  final isReasoning =
+      modelLower.contains('deepseek') || modelLower.contains('r1');
+  if (isReasoning) {
+    payload['max_tokens'] = 16384;
+    payload['chat_template_kwargs'] = {
+      'thinking': true,
+      'reasoning_effort': 'high'
+    };
+  } else {
+    payload['max_tokens'] = 4096;
+  }
+
+  if (tools != null && tools.isNotEmpty) {
+    final sortedTools = List<ITool>.from(tools)..sort((a, b) => a.name.compareTo(b.name));
+    final toolDeclarations = <Map<String, dynamic>>[];
+    for (final tool in sortedTools) {
+      toolDeclarations.add({
+        'type': 'function',
+        'function': {
+          'name': tool.name,
+          'description': tool.description,
+          'parameters': tool.parameterSchema,
+        },
+      });
+    }
+    payload['tools'] = toolDeclarations;
+  }
+
+  try {
+    http.Client? activeClient;
+    http.StreamedResponse? activeResponse;
+    const maxAttempts = 3;
+
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+      final currentClient = http.Client();
+      final request = http.Request('POST', url)
+        ..headers['Content-Type'] = 'application/json'
+        ..headers['Authorization'] = 'Bearer $apiKey'
+        ..body = json.encode(payload);
+
+      try {
+        final response = await currentClient.send(request);
+
+        if (response.statusCode == 429) {
+          final errBody = await response.stream.transform(utf8.decoder).join();
+          currentClient.close();
+          if (attempt == maxAttempts) {
+            throw Exception('NVIDIA API Error (HTTP 429): $errBody');
+          }
+          final statusMsg = '⏳ Rate limit hit. Retrying in 5s...';
+          if (onStatus != null) {
+            onStatus(statusMsg);
+          } else {
+            stdout.write('\r\x1B[38;2;255;215;0m$statusMsg\x1B[0m');
+          }
+          await Future.delayed(const Duration(seconds: 5));
+          if (onStatus != null) {
+            onStatus('Clearing rate limit status...');
+          } else {
+            stdout.write('\r\x1B[K');
+          }
+          continue;
+        }
+
+        if (response.statusCode != 200) {
+          final errBody = await response.stream.transform(utf8.decoder).join();
+          currentClient.close();
+          throw Exception(
+            'NVIDIA API Error (HTTP ${response.statusCode}): $errBody',
+          );
+        }
+        activeClient = currentClient;
+        activeResponse = response;
+        break;
+      } catch (e) {
+        currentClient.close();
+        if (attempt == maxAttempts) rethrow;
+        await Future.delayed(const Duration(seconds: 1));
+      }
+    }
+
+    if (activeClient == null || activeResponse == null) {
+      throw Exception('Failed to establish connection to NVIDIA after $maxAttempts attempts.');
+    }
+
+    final Map<int, Map<String, String>> toolCallAccumulator = {};
+
+    activeResponse.stream
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen(
+          (line) {
+            final trimmed = line.trim();
+            if (trimmed.isEmpty || trimmed == 'data: [DONE]') {
+              if (trimmed == 'data: [DONE]') {
+                for (final entry in toolCallAccumulator.values) {
+                  final name = entry['name'] ?? '';
+                  final argsStr = entry['arguments'] ?? '{}';
+                  if (name.isNotEmpty) {
+                    try {
+                      final args = json.decode(argsStr) as Map<String, dynamic>;
+                      controller.add(ToolCallEvent(name: name, args: args));
+                    } catch (_) {
+                      controller.add(ToolCallEvent(name: name, args: {'raw': argsStr}));
+                    }
+                  }
+                }
+                toolCallAccumulator.clear();
+              }
+              return;
+            }
+            if (trimmed.startsWith('data: ')) {
+              try {
+                final data = json.decode(trimmed.substring(6));
+                final choices = data['choices'];
+                if (choices != null && choices.isNotEmpty) {
+                  final delta = choices[0]['delta'];
+                  if (delta != null) {
+                    final reasoning = delta['reasoning'] ?? delta['reasoning_content'];
+                    if (reasoning != null) {
+                      controller.add(ThinkingToken(reasoning as String));
+                    }
+                    if (delta['content'] != null) {
+                      controller.add(TextToken(delta['content'] as String));
+                    }
+                    final toolCalls = delta['tool_calls'] as List?;
+                    if (toolCalls != null) {
+                      for (final tc in toolCalls) {
+                        final index = tc['index'] as int? ?? 0;
+                        final function = tc['function'] as Map<String, dynamic>?;
+                        if (function != null) {
+                          toolCallAccumulator.putIfAbsent(index, () => {'name': '', 'arguments': ''});
+                          if (function['name'] != null) {
+                            toolCallAccumulator[index]!['name'] = function['name'] as String;
+                          }
+                          if (function['arguments'] != null) {
+                            toolCallAccumulator[index]!['arguments'] =
+                                (toolCallAccumulator[index]!['arguments'] ?? '') + (function['arguments'] as String);
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              } catch (_) {}
+            }
+          },
+          onDone: () {
+            for (final entry in toolCallAccumulator.values) {
+              final name = entry['name'] ?? '';
+              final argsStr = entry['arguments'] ?? '{}';
+              if (name.isNotEmpty) {
+                try {
+                  final args = json.decode(argsStr) as Map<String, dynamic>;
+                  controller.add(ToolCallEvent(name: name, args: args));
+                } catch (_) {
+                  controller.add(ToolCallEvent(name: name, args: {'raw': argsStr}));
+                }
+              }
+            }
+            activeClient?.close();
+            controller.close();
+          },
+          onError: (e) {
+            activeClient?.close();
+            controller.addError(e);
+          },
+          cancelOnError: true,
+        );
+  } catch (e) {
+    controller.addError(e);
+    controller.close();
+  }
+
+  return controller.stream;
+}
+
 Future<Stream<InferenceEvent>> callLocalOllamaModel(
   List<Message> history,
   String baseUrl,
@@ -833,6 +1073,33 @@ Future<List<String>> fetchGroqModels(String apiKey) async {
   return ids;
 }
 
+
+Future<List<String>> fetchNvidiaModels(String apiKey) async {
+  final url = Uri.parse('https://integrate.api.nvidia.com/v1/models');
+  try {
+    final response = await http
+        .get(url, headers: {'Authorization': 'Bearer $apiKey'})
+        .timeout(const Duration(seconds: 8));
+    if (response.statusCode != 200) {
+      throw Exception('NVIDIA API returned HTTP ${response.statusCode}');
+    }
+    final decoded = json.decode(response.body);
+    final dataList = decoded['data'] as List?;
+    if (dataList == null) return ['deepseek-ai/deepseek-v4-flash'];
+
+    final List<String> ids = [];
+    for (final d in dataList) {
+      final id = d['id'] as String?;
+      if (id != null) {
+        ids.add(id);
+      }
+    }
+    return ids.isNotEmpty ? ids : ['deepseek-ai/deepseek-v4-flash'];
+  } catch (e) {
+    return ['deepseek-ai/deepseek-v4-flash'];
+  }
+}
+
 Future<List<String>> fetchOllamaModels(String baseUrl, {String apiKey = ''}) async {
   final url = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}/api/tags');
   final headers = <String, String>{};
@@ -888,6 +1155,7 @@ Future<List<ProviderConfig>> runSetupWizard() async {
     print(
       '  \x1B[32m[2] Groq Cloud\x1B[0m (Super-fast open source cloud models like Llama/Mixtral)',
     );
+    print('  \x1B[32m[N] NVIDIA API\x1B[0m (Free DeepSeek/Llama integration)');
     print(
       '  \x1B[32m[3] Local Ollama\x1B[0m (100% offline, private, zero-cost)',
     );
@@ -986,6 +1254,44 @@ Future<List<ProviderConfig>> runSetupWizard() async {
         );
       } catch (e) {
         print('\n\x1B[31m❌ API key verification failed: $e\x1B[0m\n');
+      }
+    } else if (choice == 'n' || choice == 'N') {
+      print('\n\x1B[36m--- Configuring NVIDIA API ---\x1B[0m');
+      stdout.write('Enter your NVIDIA API Key: ');
+      final apiKey = stdin.readLineSync()?.trim() ?? '';
+      if (apiKey.isEmpty) {
+        print('\x1B[31m❌ API key cannot be empty.\x1B[0m\n');
+        continue;
+      }
+      print('⏳ Connecting to NVIDIA and fetching models...');
+      try {
+        final models = await fetchNvidiaModels(apiKey);
+        if (models.isEmpty) {
+          models.add('deepseek-ai/deepseek-v4-flash');
+        }
+        print('\nAvailable NVIDIA Models:');
+        for (int i = 0; i < models.length; i++) {
+          print('  [${i + 1}] ${models[i]}');
+        }
+        stdout.write('Select model [1-${models.length}] or press Enter for [deepseek-ai/deepseek-v4-flash]: ');
+        final modelChoice = stdin.readLineSync()?.trim() ?? '';
+        String selectedModel = 'deepseek-ai/deepseek-v4-flash';
+        if (modelChoice.isNotEmpty) {
+          final idx = int.tryParse(modelChoice);
+          if (idx != null && idx > 0 && idx <= models.length) {
+            selectedModel = models[idx - 1];
+          } else {
+            selectedModel = modelChoice;
+          }
+        }
+        pool.add(ProviderConfig(
+          type: 'nvidia',
+          apiKey: apiKey,
+          model: selectedModel,
+        ));
+        print('\n\x1B[32m✓ NVIDIA ($selectedModel) added to the pool!\x1B[0m\n');
+      } catch (e) {
+        print('\n\x1B[31m❌ NVIDIA connection failed: $e\x1B[0m\n');
       }
     } else if (choice == '3') {
       print('\n\x1B[36m--- Configuring Ollama (Local or Cloud) ---\x1B[0m');

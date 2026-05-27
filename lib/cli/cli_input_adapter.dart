@@ -85,6 +85,7 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
 
   List<String> get historyList => _history;
   List<ProviderConfig> get activePool => _activePool;
+  CommandRegistry get registry => _registry;
 
   @override
   VimMode get mode => _mode;
@@ -442,6 +443,10 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
           if (text.startsWith('/')) {
             _executeSlashCommand(text);
           } else {
+            final core = _forge.core;
+            if (core != null) {
+              core.router.activeAllowedTools = null;
+            }
             _forge.onUserInput(text);
             _controller.add(InputEvent(type: InputType.text, data: text));
           }
@@ -999,21 +1004,33 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
         _forge.triggerRedraw();
       }
     } else if (cmd is InteractiveCommand) {
-      _stdinSub?.pause();
-
       await cmd.execute((result, {bool shouldQuery = false}) {
-        _stdinSub?.resume();
         if (result != null) {
           _forge.logs.appendLog(result, _forge.logWidth);
         }
         if (shouldQuery && result != null) {
           _controller.add(InputEvent(type: InputType.text, data: result));
         }
+        _forge.screen.reset();
         _forge.triggerRedraw();
       }, parsed.arguments, context);
 
+      // Restore terminal raw mode for CLIInputAdapter
+      try {
+        stdin.lineMode = false;
+        stdin.echoMode = false;
+      } catch (_) {}
+      _forge.screen.reset();
+      _forge.triggerRedraw();
     } else if (cmd is PromptCommand) {
       _forge.onStatus(cmd.progressMessage);
+
+      // 🔱 Restrict active allowed tools for prompt command if specified
+      final core = _forge.core;
+      if (core != null) {
+        core.router.activeAllowedTools = cmd.allowedTools.isNotEmpty ? cmd.allowedTools : null;
+      }
+
       final messages = await cmd.getPromptMessages(parsed.arguments, context);
 
       for (final msg in messages) {

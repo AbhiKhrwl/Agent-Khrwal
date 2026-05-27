@@ -20,6 +20,7 @@ import 'commands/models_command.dart';
 import 'commands/keybinds_command.dart';
 import 'commands/export_command.dart';
 import 'commands/history_command.dart';
+import 'commands/switch_providers_command.dart';
 
 typedef CommandLoader = Future<ApexCommand> Function();
 
@@ -67,6 +68,7 @@ class CommandRegistry {
     register('keybinds', () async => KeybindsCommand(), aliases: ['vim']);
     register('export', () async => ExportCommand());
     register('history', () async => HistoryCommand());
+    register('switch-providers', () async => SwitchProvidersCommand(), aliases: ['switch']);
   }
 }
 

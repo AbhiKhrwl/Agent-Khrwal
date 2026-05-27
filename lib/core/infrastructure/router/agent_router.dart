@@ -3,11 +3,18 @@ import '../../domain/entities/tool_execution_record.dart';
 import '../../domain/interfaces/i_tool.dart';
 import '../security/sentry_purity.dart';
 import '../tools/mcp_tools.dart';
+import '../tools/plan_mode_tools.dart';
+import '../../../cli/services/plugin_manager.dart';
+
 
 
 class AgentRouter {
   final SentryPurity validator;
   final Map<String, ITool> _tools = {};
+
+  /// Hook and permission settings for dynamic plugins
+  List<String>? activeAllowedTools;
+  HookManager? hooks;
 
   /// Tracks all tool executions for the current session.
   /// Used by the Activity Dashboard to display execution history.
@@ -203,8 +210,6 @@ class AgentRouter {
     ToolResult result;
 
     if (tool == null) {
-      // 🔱 KHARWAL ORIGINAL: Hallucinated Tool Guard with "Did you mean?"
-      // 2B models sometimes invent tools. Give a helpful suggestion.
       final available = [..._tools.keys, ...McpRegistry.mcpTools.keys];
       final suggestion = _findClosestTool(request.name, available);
       result = ToolResult(
@@ -216,6 +221,28 @@ class AgentRouter {
         isError: true,
         errorType: ToolErrorType.validation,
       );
+    } else if (activeAllowedTools != null && !activeAllowedTools!.contains(request.name)) {
+      // 🔱 STRICT WORKSPACE ISOLATION GATE FOR PLUGINS
+      result = ToolResult(
+        toolUseId: request.id,
+        content: 'Security Violation: Tool "${request.name}" is not authorized by this plugin manifest. '
+            'Authorized tools are: [${activeAllowedTools!.join(", ")}].',
+        isError: true,
+        errorType: ToolErrorType.security,
+      );
+    } else if (PlanModeManager.isPlanModeActive &&
+        !tool.isReadOnly &&
+        tool.name != 'exit_plan_mode' &&
+        tool.name != 'enter_plan_mode') {
+      result = ToolResult(
+        toolUseId: request.id,
+        content: 'Plan Mode Error: Tool "${request.name}" is blocked because Plan Mode is currently active. '
+            'In Plan Mode, you are locked to read-only codebase exploration. You must formulate an implementation plan, '
+            'save it to the workspace, request the user to review the plan, and exit Plan Mode by calling the '
+            '"exit_plan_mode" tool before you can execute any file edits or shell modifications.',
+        isError: true,
+        errorType: ToolErrorType.security,
+      );
     } else {
       final validation = validator.canUseTool(request);
       if (!validation.isAllowed) {
@@ -226,32 +253,66 @@ class AgentRouter {
           errorType: ToolErrorType.security,
         );
       } else {
-        try {
-          // 🔱 Fix #8: Per-tool timeout — prevents hangs on slow/stuck tools
-          result = await tool.run(request.params).timeout(
-            const Duration(seconds: 30),
-            onTimeout: () => ToolResult(
-              toolUseId: request.id,
-              content: 'Tool "${request.name}" timed out after 30 seconds.',
-              isError: true,
-              errorType: ToolErrorType.timeout,
-            ),
-          );
+        // 🔱 PRE-TOOL EXECUTION HOOKS
+        HookResult? preResult;
+        if (hooks != null) {
+          try {
+            preResult = await hooks!.executePreToolHooks(request.name, request.params);
+          } catch (e) {
+            preResult = HookResult(
+              decision: HookDecision.deny,
+              reason: 'PreToolUse hook threw exception: $e',
+            );
+          }
+        }
+
+        if (preResult != null && preResult.isDenied) {
           result = ToolResult(
             toolUseId: request.id,
-            content: result.content,
-            isError: result.isError,
-            errorType: result.isError
-                ? ToolErrorType.execution
-                : ToolErrorType.none,
-          );
-        } catch (e) {
-          result = ToolResult(
-            toolUseId: request.id,
-            content: 'Execution error: $e',
+            content: 'Blocked by PreToolUse hook: ${preResult.reason}',
             isError: true,
-            errorType: ToolErrorType.execution,
+            errorType: ToolErrorType.security,
           );
+        } else {
+          final actualParams = preResult?.modifiedInput ?? request.params;
+          try {
+            result = await tool.run(actualParams).timeout(
+              const Duration(seconds: 30),
+              onTimeout: () => ToolResult(
+                toolUseId: request.id,
+                content: 'Tool "${request.name}" timed out after 30 seconds.',
+                isError: true,
+                errorType: ToolErrorType.timeout,
+              ),
+            );
+            result = ToolResult(
+              toolUseId: request.id,
+              content: result.content,
+              isError: result.isError,
+              errorType: result.isError
+                  ? ToolErrorType.execution
+                  : ToolErrorType.none,
+            );
+
+            // 🔱 POST-TOOL EXECUTION HOOKS (Success or Failure)
+            if (hooks != null) {
+              if (result.isError) {
+                await hooks!.executePostToolFailureHooks(request.name, actualParams, result.content);
+              } else {
+                await hooks!.executePostToolHooks(request.name, actualParams, result.content);
+              }
+            }
+          } catch (e) {
+            result = ToolResult(
+              toolUseId: request.id,
+              content: 'Execution error: $e',
+              isError: true,
+              errorType: ToolErrorType.execution,
+            );
+            if (hooks != null) {
+              await hooks!.executePostToolFailureHooks(request.name, actualParams, e.toString());
+            }
+          }
         }
       }
     }

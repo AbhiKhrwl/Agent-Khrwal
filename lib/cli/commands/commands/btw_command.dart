@@ -87,7 +87,7 @@ class BtwCommand extends InteractiveCommand {
         final doneCompleter = Completer<void>();
         adapter.rawKeyInterceptor = (bytes) {
           if (!doneCompleter.isCompleted) {
-            doneCompleter.complete();
+            if (!doneCompleter.isCompleted) doneCompleter.complete();
           }
         };
         await doneCompleter.future;
@@ -100,9 +100,7 @@ class BtwCommand extends InteractiveCommand {
       stdout.writeln('\n${ChromeAura.wrath}Error processing query: $e${ChromeAura.reset}');
       await Future.delayed(const Duration(seconds: 2));
     } finally {
-      stdin.echoMode = true;
-      stdin.lineMode = true;
-      stdout.write('${ChromeAura.alternateScreenBufferOff}${ChromeAura.showCursor}');
+      stdout.write(ChromeAura.showCursor);
     }
 
     onDone(null, shouldQuery: false);

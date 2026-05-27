@@ -8,7 +8,7 @@ library;
 import 'dart:math';
 
 class VirtualConsoleList {
-  final List<String> _rawLogs = [];
+  final List<String> _rawLogs = []; // Now stores complete raw blocks, potentially containing newlines
   final List<String> _wrappedLines = [];
   int _lastLogWrappedCount = 0;
   int _lastTerminalWidth = 80;
@@ -19,12 +19,11 @@ class VirtualConsoleList {
 
   /// Append a log block. Splits it by newline, wraps it, and updates scroll history.
   void appendLog(String log, int terminalWidth) {
-    if (log.isEmpty) return;
+    _rawLogs.add(log);
 
     final lines = log.split('\n');
-    _rawLogs.addAll(lines);
-
     var wrappedCount = 0;
+
     // If terminal width changed, we need to re-wrap everything.
     if (terminalWidth != _lastTerminalWidth) {
       _lastTerminalWidth = terminalWidth;
@@ -51,7 +50,7 @@ class VirtualConsoleList {
       return;
     }
 
-    // Remove the last raw log line
+    // Remove the last raw log block
     _rawLogs.removeLast();
     // Remove the wrapped lines belonging to it
     if (_wrappedLines.isNotEmpty && _lastLogWrappedCount > 0) {
@@ -64,6 +63,22 @@ class VirtualConsoleList {
     appendLog(newContent, terminalWidth);
   }
 
+  /// Removes the last log block entirely.
+  void removeLastLog() {
+    if (_rawLogs.isEmpty) return;
+    _rawLogs.removeLast();
+    if (_wrappedLines.isNotEmpty && _lastLogWrappedCount > 0) {
+      _wrappedLines.removeRange(
+        _wrappedLines.length - _lastLogWrappedCount,
+        _wrappedLines.length,
+      );
+    }
+    _lastLogWrappedCount = 0;
+    if (bottomLocked) {
+      _scrollOffsetLines = max(0, _wrappedLines.length);
+    }
+  }
+
   /// Rebuilds all wrapped lines when terminal width changes.
   void handleResize(int terminalWidth) {
     if (terminalWidth == _lastTerminalWidth) return;
@@ -73,11 +88,20 @@ class VirtualConsoleList {
 
   void _rebuildWrappedLines(int terminalWidth) {
     _wrappedLines.clear();
-    for (final line in _rawLogs) {
-      _wrappedLines.addAll(wrapANSIStyleLine(line, terminalWidth));
+    for (final block in _rawLogs) {
+      final lines = block.split('\n');
+      for (final line in lines) {
+        _wrappedLines.addAll(wrapANSIStyleLine(line, terminalWidth));
+      }
     }
     if (_rawLogs.isNotEmpty) {
-      _lastLogWrappedCount = wrapANSIStyleLine(_rawLogs.last, terminalWidth).length;
+      final lastBlock = _rawLogs.last;
+      final lines = lastBlock.split('\n');
+      var lastBlockWrappedCount = 0;
+      for (final line in lines) {
+        lastBlockWrappedCount += wrapANSIStyleLine(line, terminalWidth).length;
+      }
+      _lastLogWrappedCount = lastBlockWrappedCount;
     } else {
       _lastLogWrappedCount = 0;
     }

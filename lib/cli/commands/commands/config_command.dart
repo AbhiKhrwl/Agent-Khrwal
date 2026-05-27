@@ -86,12 +86,12 @@ class ConfigCommand extends InteractiveCommand {
       } else {
         final char = String.fromCharCode(byte).toLowerCase();
         if (char == 'q') {
-          doneCompleter.complete();
+          if (!doneCompleter.isCompleted) doneCompleter.complete();
         } else if (char == 's') {
           if (needsSave) {
             ConfigManager.save(pool);
           }
-          doneCompleter.complete();
+          if (!doneCompleter.isCompleted) doneCompleter.complete();
         } else if (char == 'p') {
           // Promote model priority (move up)
           if (selectedIdx > 0 && pool.isNotEmpty) {
@@ -121,12 +121,17 @@ class ConfigCommand extends InteractiveCommand {
     // Discard interceptor
     adapter.rawKeyInterceptor = null;
 
-    // Restore TTY mode and screen buffer
-    stdin.echoMode = true;
-    stdin.lineMode = true;
-    stdout.write('${ChromeAura.alternateScreenBufferOff}${ChromeAura.showCursor}');
+    // Restore cursor
+    stdout.write(ChromeAura.showCursor);
 
     if (needsSave) {
+      if (pool.isNotEmpty) {
+        final newPrimary = pool.first;
+        final forge = context['forge'];
+        if (forge != null) {
+          forge.updateConfiguration(newPrimary.model, newPrimary.type);
+        }
+      }
       onDone('🔱 Priority pool configurations updated and saved.', shouldQuery: false);
     } else {
       onDone('🔱 Settings discarded.', shouldQuery: false);

@@ -23,6 +23,11 @@ import '../../widgets/activity_drawer.dart';
 import '../../widgets/sandbox_explorer.dart';
 import '../../../core/infrastructure/tools/spectral_ops.dart';
 import '../../../core/infrastructure/prompts/kharwal_behavior.dart';
+import 'package:apex_lite/cli/commands/command_registry.dart';
+import 'package:apex_lite/cli/commands/command_parser.dart';
+import 'package:apex_lite/cli/commands/apex_command.dart';
+import 'package:apex_lite/cli/services/plugin_manager.dart';
+
 
 class GajrajOracleScaffold extends StatefulWidget {
   final AetherCore core;
@@ -67,6 +72,9 @@ class _GajrajOracleScaffoldState extends State<GajrajOracleScaffold>
   File? _pendingImage;
   Uint8List? _pendingImageBytes;
 
+  final CommandRegistry _commandRegistry = CommandRegistry();
+  List<String> _commandSuggestions = [];
+
   @override
   Stream<InputEvent> get inputChannel => _inputChannel.stream;
 
@@ -74,6 +82,9 @@ class _GajrajOracleScaffoldState extends State<GajrajOracleScaffold>
   void initState() {
     super.initState();
     _eventSubscription = widget.core.eventStream.listen(_onCoreEvent);
+    _inputController.addListener(_onInputChanged);
+    _loadPlugins();
+
 
     // Load messages from current session or start fresh
     final sm = widget.sessionManager;
@@ -131,6 +142,137 @@ class _GajrajOracleScaffoldState extends State<GajrajOracleScaffold>
       history: _history,
       callModel: widget.callModel,
     );
+  }
+
+  void _onInputChanged() {
+    final text = _inputController.text;
+    if (text.startsWith('/') && !text.contains(' ')) {
+      final query = text.substring(1).toLowerCase();
+      final allCommands = _commandRegistry.registeredCommandNames;
+      setState(() {
+        _commandSuggestions = allCommands
+            .where((name) => name.toLowerCase().startsWith(query))
+            .toList();
+      });
+    } else {
+      if (_commandSuggestions.isNotEmpty) {
+        setState(() {
+          _commandSuggestions = [];
+        });
+      }
+    }
+  }
+
+  Future<void> _loadPlugins() async {
+    final userPluginsPath = '${widget.sandboxPath}/plugins';
+    final builtInPluginsPath = './##plugin_duniya/examples';
+
+    try {
+      await Directory(userPluginsPath).create(recursive: true);
+    } catch (_) {}
+
+    final pluginLoader = PluginLoader(
+      pluginsDirPath: userPluginsPath,
+      builtInDirPath: builtInPluginsPath,
+      context: {
+        'registry': _commandRegistry,
+        'adapter': this,
+        'core': widget.core,
+      },
+    );
+
+    widget.core.router.hooks = pluginLoader.hookManager;
+    await pluginLoader.loadPlugins();
+  }
+
+  Future<void> _selectCommand(String cmdName) async {
+    final cmd = await _commandRegistry.getCommand(cmdName);
+    if (cmd != null && cmd.argumentHint.isEmpty) {
+      _inputController.clear();
+      setState(() {
+        _commandSuggestions = [];
+      });
+      _executeSlashCommand('/$cmdName');
+    } else {
+      final text = '/$cmdName ';
+      setState(() {
+        _inputController.text = text;
+        _inputController.selection = TextSelection.fromPosition(
+          TextPosition(offset: text.length),
+        );
+        _commandSuggestions = [];
+      });
+    }
+  }
+
+  Future<void> _executeSlashCommand(String text) async {
+    final parsed = CommandParser.parse(text);
+    if (parsed == null) return;
+
+    if (!_commandRegistry.hasCommand(parsed.commandName)) {
+      setState(() {
+        _chatData.add({
+          'type': 'error',
+          'data': 'Unknown command: /${parsed.commandName}. Type /help for options.'
+        });
+      });
+      return;
+    }
+
+    final cmd = await _commandRegistry.getCommand(parsed.commandName);
+    if (cmd == null) return;
+
+    final context = <String, dynamic>{
+      'registry': _commandRegistry,
+      'core': widget.core,
+      'history': _history,
+      'callModel': widget.callModel,
+      'adapter': this,
+    };
+
+    if (cmd is LocalCommand) {
+      setState(() {
+        _chatData.add({'type': 'status', 'data': 'Running command /${cmd.name}...'});
+      });
+      final result = await cmd.execute(parsed.arguments, context);
+      if (result is TextResult) {
+        setState(() {
+          _chatData.add({'type': 'final', 'data': result.value});
+        });
+        _scrollToBottom();
+      }
+    } else if (cmd is InteractiveCommand) {
+      await cmd.execute((result, {bool shouldQuery = false}) {
+        if (result != null) {
+          setState(() {
+            _chatData.add({'type': 'final', 'data': result});
+          });
+        }
+        if (shouldQuery && result != null) {
+          _inputChannel.add(InputEvent(type: InputType.text, data: result));
+        }
+        _scrollToBottom();
+      }, parsed.arguments, context);
+    } else if (cmd is PromptCommand) {
+      setState(() {
+        _chatData.add({'type': 'status', 'data': cmd.progressMessage});
+        _isProcessing = true;
+      });
+
+      widget.core.router.activeAllowedTools = cmd.allowedTools.isNotEmpty ? cmd.allowedTools : null;
+
+      final messages = await cmd.getPromptMessages(parsed.arguments, context);
+      for (final msg in messages) {
+        _history.add(msg);
+        _chatData.add({'type': 'user', 'data': msg.content});
+        _inputChannel.add(InputEvent(
+          type: InputType.text,
+          data: msg.content,
+          metadata: msg.metadata,
+        ));
+      }
+      _scrollToBottom();
+    }
   }
 
   void _onCoreEvent(Map<String, dynamic> event) {
@@ -387,7 +529,11 @@ class _GajrajOracleScaffoldState extends State<GajrajOracleScaffold>
     // Regular text-only send
     if (text.isEmpty) return;
     _inputController.clear();
-    _inputChannel.add(InputEvent(type: InputType.text, data: text));
+    if (text.startsWith('/')) {
+      _executeSlashCommand(text);
+    } else {
+      _inputChannel.add(InputEvent(type: InputType.text, data: text));
+    }
     HapticFeedback.lightImpact();
   }
 
@@ -516,6 +662,7 @@ class _GajrajOracleScaffoldState extends State<GajrajOracleScaffold>
 
   @override
   void dispose() {
+    _inputController.removeListener(_onInputChanged);
     _eventSubscription?.cancel();
     _inputController.dispose();
     _scrollController.dispose();
@@ -1157,6 +1304,7 @@ class _GajrajOracleScaffoldState extends State<GajrajOracleScaffold>
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          _buildSlashCommandsOverlay(accent),
           // 🔱 Pending image preview strip
           if (_pendingImage != null)
             Container(
@@ -1392,6 +1540,80 @@ class _GajrajOracleScaffoldState extends State<GajrajOracleScaffold>
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildSlashCommandsOverlay(Color accent) {
+    if (_commandSuggestions.isEmpty) return const SizedBox.shrink();
+
+    return Container(
+      constraints: const BoxConstraints(maxHeight: 180),
+      margin: const EdgeInsets.only(bottom: 8, left: 4, right: 4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF14171E),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withAlpha(15)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withAlpha(200),
+            blurRadius: 10,
+            spreadRadius: 2,
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: ListView.builder(
+          shrinkWrap: true,
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          itemCount: _commandSuggestions.length,
+          itemBuilder: (context, index) {
+            final cmdName = _commandSuggestions[index];
+            return Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () => _selectCommand(cmdName),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  child: Row(
+                    children: [
+                      Icon(Icons.terminal_rounded, color: accent.withAlpha(180), size: 16),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          '/$cmdName',
+                          style: TextStyle(
+                            color: Colors.white.withAlpha(220),
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: accent.withAlpha(20),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          'CMD',
+                          style: TextStyle(
+                            color: accent,
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
       ),
     );
   }

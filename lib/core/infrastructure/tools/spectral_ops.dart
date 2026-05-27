@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:async';
 import '../../domain/entities/tool_entities.dart';
 import '../services/process_utils.dart';
+import '../services/persistent_shell_manager.dart';
 import '../security/path_jailer.dart';
 import 'task_tools.dart';
 
@@ -289,66 +290,36 @@ class SpectralOps {
         await fileSink.close();
         return;
       }
-      
-      final cleanEnv = _scrubEnvironment();
 
-      final process = await Process.start(
-        _shell,
-        ['-c', command],
-        workingDirectory: workingDirectory,
-        environment: cleanEnv,
-        includeParentEnvironment: false,
+      final manager = PersistentShellManager(
+        taskId: taskId,
+        command: _shell,
+        arguments: ['-c', command],
+        workingDir: workingDirectory,
+        logFilePath: outputFile.path,
       );
 
-      final pid = process.pid;
-      _activePids.add(pid);
-      watchdog?.track(process);
+      await manager.start();
 
-      final fileSink = outputFile.openWrite(mode: FileMode.append);
-      fileSink.writeln('[Background Process started with PID: $pid]');
-      
-      final stdoutSub = process.stdout.listen((data) {
-        fileSink.add(data);
-      });
-      final stderrSub = process.stderr.listen((data) {
-        fileSink.add(data);
-      });
+      final pid = manager.process?.pid;
+      if (pid != null) {
+        _activePids.add(pid);
+        if (manager.process != null) {
+          watchdog?.track(manager.process!);
+        }
+      }
 
-      process.exitCode.then((code) async {
-        _activePids.remove(pid);
-        await stdoutSub.cancel();
-        await stderrSub.cancel();
-
-        fileSink.writeln('\n[Process finished with exit code: $code]');
-        await fileSink.flush();
-        await fileSink.close();
+      manager.onCompleted.then((result) async {
+        if (pid != null) {
+          _activePids.remove(pid);
+        }
 
         // Update task status in .apex_tasks.json
         try {
           final tasks = TaskStoreHelper.readTasks(sandboxRoot);
           final task = tasks[taskId];
           if (task != null) {
-            task['status'] = 'done';
-            task['updated_at'] = DateTime.now().toIso8601String();
-            tasks[taskId] = task;
-            TaskStoreHelper.writeTasks(sandboxRoot, tasks);
-          }
-        } catch (_) {}
-      }).catchError((err) async {
-        _activePids.remove(pid);
-        await stdoutSub.cancel();
-        await stderrSub.cancel();
-
-        fileSink.writeln('\n[Process crashed: $err]');
-        await fileSink.flush();
-        await fileSink.close();
-
-        // Update task status in .apex_tasks.json
-        try {
-          final tasks = TaskStoreHelper.readTasks(sandboxRoot);
-          final task = tasks[taskId];
-          if (task != null) {
-            task['status'] = 'stopped';
+            task['status'] = result.exitCode == 0 ? 'done' : 'stopped';
             task['updated_at'] = DateTime.now().toIso8601String();
             tasks[taskId] = task;
             TaskStoreHelper.writeTasks(sandboxRoot, tasks);

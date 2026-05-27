@@ -5,6 +5,7 @@ import '../../domain/interfaces/i_tool.dart';
 import '../../domain/entities/tool_entities.dart';
 import '../services/id_service.dart';
 import '../security/path_jailer.dart';
+import '../services/subagent_supervisor.dart';
 import 'agent_tool.dart'; // To interface with active subagents registry
 
 /// Helper class for accessing shared task records in the sandbox.
@@ -406,6 +407,12 @@ class TaskStopTool implements ITool {
       // Stop active sub-agent logic if registered in registry
       SubAgentRegistry.activeAgents[taskId]?['status'] = 'stopped';
 
+      // Cascade cancellation to the active subagent supervisor cancellation token!
+      final supervisor = AgentTool.supervisors[taskId];
+      if (supervisor != null) {
+        supervisor.cancellationToken.cancel();
+      }
+
       // Log the stop event
       final file = File(p.join(sandboxRoot, '.apex_task_$taskId.txt'));
       if (file.existsSync()) {
@@ -504,12 +511,18 @@ class TaskOutputTool implements ITool {
 
       final logText = await file.readAsString();
 
+      final supervisor = AgentTool.supervisors[taskId];
+      final Map<String, dynamic> responsePayload = {
+        'content': logText,
+        'status': task['status'],
+      };
+      if (supervisor != null) {
+        responsePayload['supervisor'] = supervisor.toJson();
+      }
+
       return ToolResult(
         toolUseId: '',
-        content: jsonEncode({
-          'content': logText,
-          'status': task['status'],
-        }),
+        content: jsonEncode(responsePayload),
       );
     } catch (e) {
       return ToolResult(

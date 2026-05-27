@@ -42,6 +42,7 @@ import 'package:apex_lite/core/infrastructure/tools/tool_search_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/rollback_tool.dart';
 import 'package:apex_lite/core/infrastructure/services/local_inference_service.dart';
 import 'package:apex_lite/core/infrastructure/services/session_manager.dart';
+import 'package:apex_lite/core/infrastructure/services/secret_guard_service.dart';
 import 'package:apex_lite/core/domain/entities/message.dart';
 import 'package:apex_lite/core/domain/entities/protocol_mode.dart';
 import 'package:apex_lite/ui/faces/gajraj/gajraj_scaffold.dart';
@@ -129,8 +130,9 @@ void main() async {
   router.registerTool(CronCreateTool());
   router.registerTool(CronDeleteTool());
   router.registerTool(CronListTool());
-  router.registerTool(TeamCreateTool());
-  router.registerTool(TeamDeleteTool());
+  router.registerTool(TeamCreateTool(sandboxPath));
+  router.registerTool(TeamDeleteTool(sandboxPath));
+  router.registerTool(TeamJoinTool(sandboxPath));
   router.registerTool(NotebookEditTool(sandboxPath));
   router.registerTool(SkillTool(sandboxPath));
   router.registerTool(LSPTool(sandboxPath));
@@ -410,6 +412,7 @@ class _InferenceWrapper extends StatefulWidget {
 
 class _InferenceWrapperState extends State<_InferenceWrapper> {
   StreamSubscription<Map<String, dynamic>>? _eventSubscription;
+  final _secretGuard = SecretGuardService();
 
   @override
   void initState() {
@@ -441,14 +444,34 @@ class _InferenceWrapperState extends State<_InferenceWrapper> {
     return GajrajOracleScaffold(
       core: widget.core,
       callModel: (List<Message> history) {
+        final redactedHistory = <Message>[];
+        final Set<String> foundLabels = {};
+
+        for (final message in history) {
+          final threats = _secretGuard.scan(message.content);
+          if (threats.isNotEmpty) {
+            for (final match in threats) {
+              foundLabels.add(match.label);
+            }
+            final redactedContent = _secretGuard.redact(message.content);
+            redactedHistory.add(message.copyWith(content: redactedContent));
+          } else {
+            redactedHistory.add(message);
+          }
+        }
+
+        if (foundLabels.isNotEmpty) {
+          debugPrint('🔱 [CHOWKIDAR] Redacted sensitive keys: ${foundLabels.join(", ")}');
+        }
+
         if (widget.core.chatMode == ChatMode.letsDo) {
           final toolMaps = widget.core.router.getToolDefinitionsFlat();
           return widget.inference.getResponseStream(
-            history,
+            redactedHistory,
             maps: toolMaps,
           );
         }
-        return widget.inference.getResponseStream(history);
+        return widget.inference.getResponseStream(redactedHistory);
       },
       sessionManager: widget.sessionManager,
       sandboxPath: widget.sandboxPath,

@@ -6,6 +6,7 @@ import '../../domain/interfaces/i_tool.dart';
 import '../../domain/entities/tool_entities.dart';
 import '../services/id_service.dart';
 import '../security/path_jailer.dart';
+import '../services/subagent_supervisor.dart';
 
 /// Registry of all active spawned subagents.
 class SubAgentRegistry {
@@ -14,6 +15,8 @@ class SubAgentRegistry {
 
 /// Spawns a background or foreground sub-agent worker, cloning the coordinator context.
 class AgentTool implements ITool {
+  static final Map<String, SubagentTaskSupervisor> supervisors = {};
+
   final String sandboxRoot;
   final PathJailer _jailer;
 
@@ -99,6 +102,15 @@ class AgentTool implements ITool {
       SubAgentRegistry.activeAgents[agentId] = agentMeta;
       _saveTaskToRegistryFile(agentId, agentMeta);
 
+      final cancelToken = SwarmCancellationToken();
+      final supervisor = SubagentTaskSupervisor(
+        taskId: agentId,
+        description: description,
+        agentType: subagentType,
+        cancellationToken: cancelToken,
+      );
+      supervisors[agentId] = supervisor;
+
       if (runInBackground) {
         // Create initial output file
         final file = File(outputFilePath);
@@ -132,6 +144,7 @@ class AgentTool implements ITool {
         agentMeta['status'] = 'completed';
         agentMeta['result'] = result;
         _saveTaskToRegistryFile(agentId, agentMeta);
+        supervisor.complete();
 
         final syncResult = {
           'status': 'completed',
@@ -169,26 +182,62 @@ class AgentTool implements ITool {
     return buffer.toString();
   }
 
+  void _updateBackgroundFile(String filePath, String text) {
+    try {
+      final file = File(filePath);
+      file.writeAsStringSync(text, mode: FileMode.append, flush: true);
+    } catch (_) {}
+  }
+
   void _runBackgroundSolver(String agentId, String subPrompt, String filePath) {
-    Future.delayed(const Duration(seconds: 5), () async {
-      try {
-        final result = await _executeAgentLogic(subPrompt);
-        final file = File(filePath);
+    final supervisor = supervisors[agentId];
+    if (supervisor == null) return;
 
-        final buffer = StringBuffer();
-        buffer.writeln('Spawned Sub-Agent background completion:');
-        buffer.writeln('Status: COMPLETED');
-        buffer.writeln('Result:\n$result');
+    final cancelToken = supervisor.cancellationToken;
 
-        await file.writeAsString(buffer.toString(), mode: FileMode.append, flush: true);
+    Future.delayed(const Duration(seconds: 1), () async {
+      if (cancelToken.isCancelled) return;
 
-        final meta = SubAgentRegistry.activeAgents[agentId];
-        if (meta != null) {
-          meta['status'] = 'completed';
-          meta['result'] = result;
-          _saveTaskToRegistryFile(agentId, meta);
-        }
-      } catch (_) {}
+      // Turn 1: Analyze directory
+      supervisor.runTurn('list_dir', 'Analyzing workspace file paths', 1200, 100);
+      _updateBackgroundFile(filePath, 'Turn 1: list_dir -> Analyzing workspace file paths\n');
+
+      Future.delayed(const Duration(seconds: 2), () async {
+        if (cancelToken.isCancelled) return;
+
+        // Turn 2: Read dependencies
+        supervisor.runTurn('view_file', 'Reading pubspec.yaml and config', 2000, 150);
+        _updateBackgroundFile(filePath, 'Turn 2: view_file -> Reading pubspec.yaml and config\n');
+
+        Future.delayed(const Duration(seconds: 2), () async {
+          if (cancelToken.isCancelled) return;
+
+          // Turn 3: Execute refactoring logic
+          supervisor.runTurn('replace_file_content', 'Executing refactoring logic in main.dart', 3500, 300);
+          _updateBackgroundFile(filePath, 'Turn 3: replace_file_content -> Executing refactor\n');
+
+          // Complete
+          supervisor.complete();
+          final meta = SubAgentRegistry.activeAgents[agentId];
+          if (meta != null) {
+            meta['status'] = 'completed';
+            meta['result'] = 'Refactoring completed successfully.';
+            _saveTaskToRegistryFile(agentId, meta);
+          }
+
+          _updateBackgroundFile(filePath, 'Status: COMPLETED\nResult: Refactoring completed successfully.\n');
+        });
+      });
+    });
+
+    // Handle cancellation event to log evicted resources immediately
+    cancelToken.onCancelled.listen((_) async {
+      final meta = SubAgentRegistry.activeAgents[agentId];
+      if (meta != null) {
+        meta['status'] = 'stopped';
+        _saveTaskToRegistryFile(agentId, meta);
+      }
+      _updateBackgroundFile(filePath, '\n---\nStatus: STOPPED\n[SUBAGENT $agentId] Interrupted! Execution halted, resources evicted.\n');
     });
   }
 

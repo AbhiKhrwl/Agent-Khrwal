@@ -65,6 +65,8 @@ class TerminalForge {
 
   String _currentResponseBuffer = '';
   String _currentThoughtBuffer = '';
+  bool _isThinking = false;
+  DateTime? _thinkingStart;
 
   TerminalForge() {
     heartbeat = OracleHeartbeat('Awakening');
@@ -161,6 +163,9 @@ class TerminalForge {
     _animTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
       _animTick++;
       telemetry.tick();
+      if (_isThinking) {
+        _updateThinkingUI();
+      }
       if (_needsRedraw || heartbeat.isAlive) {
         _redraw();
         _needsRedraw = false;
@@ -538,11 +543,38 @@ class TerminalForge {
     logs.appendLog('  ${ChromeAura.trident}🔱${ChromeAura.reset} ${ChromeAura.oracle}$text${ChromeAura.reset}', logWidth);
     _responseStart = DateTime.now();
     _startThinking();
+    
+    // Append the initial thinking log block!
+    logs.appendLog('  ${ChromeAura.celestial}🔱 Thinking...${ChromeAura.reset}', logWidth);
     _redraw();
   }
 
   void onTextChunk(String chunk) {
     _stopThinking();
+    
+    if (_isThinking) {
+      _isThinking = false;
+      final elapsedSecs = _thinkingStart != null
+          ? DateTime.now().difference(_thinkingStart!).inMilliseconds / 1000.0
+          : 0.0;
+          
+      if (_currentThoughtBuffer.isNotEmpty) {
+        // Model actually thought! Lock in the completed thought line.
+        logs.updateLastLog('  ${ChromeAura.sanctum}🔱 Thought for ${elapsedSecs.toStringAsFixed(1)}s${ChromeAura.reset}', logWidth);
+        // Start a new response block
+        _currentResponseBuffer = '';
+        logs.appendLog('', logWidth);
+      } else {
+        // Model did not think. Overwrite the "Thinking..." block directly.
+        _currentResponseBuffer = '';
+      }
+    } else {
+      // Not in thinking state (e.g. after a tool execution, or resuming generation).
+      if (_currentResponseBuffer.isEmpty) {
+        logs.appendLog('', logWidth);
+      }
+    }
+
     _currentResponseBuffer += chunk;
 
     final chunkTokens = max(1, (chunk.length / 4).round());
@@ -555,21 +587,42 @@ class TerminalForge {
   }
 
   void onThought(String thought) {
-    _stopThinking();
+    if (!_isThinking) {
+      _isThinking = true;
+      _thinkingStart = DateTime.now();
+      _currentThoughtBuffer = '';
+      logs.appendLog('  ${ChromeAura.celestial}🔱 Thinking...${ChromeAura.reset}', logWidth);
+    }
+    
     _currentThoughtBuffer += thought;
 
     final thoughtTokens = max(1, (thought.length / 4).round());
     _outputTokens += thoughtTokens;
     _updateCost();
-
-    logs.updateLastLog('${ChromeAura.celestial}$_currentThoughtBuffer${ChromeAura.reset}', logWidth);
-    _needsRedraw = true;
   }
 
   void onToolStart(String toolName, Map<String, dynamic> params) {
     _stopThinking();
     heartbeat.relabel('Executing $toolName');
     heartbeat.start();
+
+    if (_isThinking) {
+      _isThinking = false;
+      final elapsedSecs = _thinkingStart != null
+          ? DateTime.now().difference(_thinkingStart!).inMilliseconds / 1000.0
+          : 0.0;
+          
+      if (_currentThoughtBuffer.isNotEmpty) {
+        // Thought occurred! Lock in the thought line.
+        logs.updateLastLog('  ${ChromeAura.sanctum}🔱 Thought for ${elapsedSecs.toStringAsFixed(1)}s${ChromeAura.reset}', logWidth);
+      } else {
+        // No thought occurred. Remove the "Thinking..." block.
+        logs.removeLastLog();
+      }
+    }
+
+    _currentResponseBuffer = '';
+    _currentThoughtBuffer = '';
 
     final width = logWidth;
     final icon = ToolChrome.icon(toolName);
@@ -628,6 +681,22 @@ class TerminalForge {
 
   void onFinalResponse(String response) {
     _stopThinking();
+    
+    if (_isThinking) {
+      _isThinking = false;
+      final elapsedSecs = _thinkingStart != null
+          ? DateTime.now().difference(_thinkingStart!).inMilliseconds / 1000.0
+          : 0.0;
+          
+      if (_currentThoughtBuffer.isNotEmpty) {
+        logs.updateLastLog('  ${ChromeAura.sanctum}🔱 Thought for ${elapsedSecs.toStringAsFixed(1)}s${ChromeAura.reset}', logWidth);
+        _currentResponseBuffer = '';
+        logs.appendLog('', logWidth);
+      } else {
+        _currentResponseBuffer = '';
+      }
+    }
+
     final woven = DivineWeaverCacher.weave(response, logWidth);
     logs.updateLastLog(woven, logWidth);
     _responseStart = null;
@@ -636,12 +705,24 @@ class TerminalForge {
 
   void onError(String error) {
     _stopThinking();
+    
+    if (_isThinking) {
+      _isThinking = false;
+      logs.removeLastLog();
+    }
+    
     logs.appendLog('  ${ChromeAura.wrath}✗ $error${ChromeAura.reset}', logWidth);
     _needsRedraw = true;
   }
 
   void onFatalError(String error) {
     _stopThinking();
+    
+    if (_isThinking) {
+      _isThinking = false;
+      logs.removeLastLog();
+    }
+    
     final buffer = StringBuffer();
     buffer.writeln('  ${ChromeAura.wrath}${ChromeAura.bold}╔══ FATAL ERROR ══════════════════════════════════════╗${ChromeAura.reset}');
     buffer.writeln('  ${ChromeAura.wrath}║${ChromeAura.reset} $error');
@@ -661,12 +742,29 @@ class TerminalForge {
   }
 
   void _startThinking() {
+    _isThinking = true;
+    _thinkingStart = DateTime.now();
     heartbeat.relabel('Thinking');
     heartbeat.start();
   }
 
   void _stopThinking() {
+    _isThinking = false;
     heartbeat.stop();
+  }
+
+  void _updateThinkingUI() {
+    if (_thinkingStart == null) return;
+    final elapsedSecs = DateTime.now().difference(_thinkingStart!).inMilliseconds / 1000.0;
+    final glyphs = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    final glyph = glyphs[_animTick % glyphs.length];
+
+    // Shimmering color cycle
+    final colors = [ChromeAura.celestial, ChromeAura.trident, ChromeAura.oracle, ChromeAura.ember];
+    final color = colors[(_animTick ~/ 3) % colors.length];
+
+    logs.updateLastLog('  $color🔱 Thinking ${elapsedSecs.toStringAsFixed(1)}s $glyph${ChromeAura.reset}', logWidth);
+    _needsRedraw = true;
   }
 
   String _providerAura() {

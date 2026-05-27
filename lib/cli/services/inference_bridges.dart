@@ -1396,7 +1396,13 @@ Future<List<ProviderConfig>> runSetupWizard() async {
     'Your configuration will be permanently saved to:\n  \x1B[33m${ConfigManager.configFilePath}\x1B[0m\n',
   );
 
-  final pool = <ProviderConfig>[];
+  final pool = ConfigManager.load();
+  if (pool.isNotEmpty) {
+    print('\x1B[36mCurrent configured failover pool:\x1B[0m');
+    displayPoolTable(pool);
+    print('(Selecting a provider below will update its settings, others will be preserved)\n');
+  }
+
   var configuring = true;
 
   while (configuring) {
@@ -1453,9 +1459,13 @@ Future<List<ProviderConfig>> runSetupWizard() async {
           }
         }
 
-        pool.add(
-          ProviderConfig(type: 'gemini', apiKey: key, model: selectedModel),
-        );
+        final newConfig = ProviderConfig(type: 'gemini', apiKey: key, model: selectedModel);
+        final idx = pool.indexWhere((p) => p.type == 'gemini');
+        if (idx != -1) {
+          pool[idx] = newConfig;
+        } else {
+          pool.add(newConfig);
+        }
         print(
           '\n\x1B[32m✓ Google Gemini ($selectedModel) added to the pool!\x1B[0m\n',
         );
@@ -1499,9 +1509,13 @@ Future<List<ProviderConfig>> runSetupWizard() async {
           }
         }
 
-        pool.add(
-          ProviderConfig(type: 'groq', apiKey: key, model: selectedModel),
-        );
+        final newConfig = ProviderConfig(type: 'groq', apiKey: key, model: selectedModel);
+        final idx = pool.indexWhere((p) => p.type == 'groq');
+        if (idx != -1) {
+          pool[idx] = newConfig;
+        } else {
+          pool.add(newConfig);
+        }
         print(
           '\n\x1B[32m✓ Groq Cloud ($selectedModel) added to the pool!\x1B[0m\n',
         );
@@ -1537,11 +1551,17 @@ Future<List<ProviderConfig>> runSetupWizard() async {
             selectedModel = modelChoice;
           }
         }
-        pool.add(ProviderConfig(
+        final newConfig = ProviderConfig(
           type: 'nvidia',
           apiKey: apiKey,
           model: selectedModel,
-        ));
+        );
+        final idx = pool.indexWhere((p) => p.type == 'nvidia');
+        if (idx != -1) {
+          pool[idx] = newConfig;
+        } else {
+          pool.add(newConfig);
+        }
         print('\n\x1B[32m✓ NVIDIA ($selectedModel) added to the pool!\x1B[0m\n');
       } catch (e) {
         print('\n\x1B[31m❌ NVIDIA connection failed: $e\x1B[0m\n');
@@ -1636,14 +1656,18 @@ Future<List<ProviderConfig>> runSetupWizard() async {
           }
         }
 
-        pool.add(
-          ProviderConfig(
-            type: 'ollama',
-            apiKey: apiKey,
-            model: selectedModel,
-            baseUrl: baseUrl,
-          ),
+        final newConfig = ProviderConfig(
+          type: 'ollama',
+          apiKey: apiKey,
+          model: selectedModel,
+          baseUrl: baseUrl,
         );
+        final idx = pool.indexWhere((p) => p.type == 'ollama');
+        if (idx != -1) {
+          pool[idx] = newConfig;
+        } else {
+          pool.add(newConfig);
+        }
         print(
           '\n\x1B[32m✓ Ollama ($selectedModel) added to the pool!\x1B[0m\n',
         );
@@ -1681,11 +1705,17 @@ Future<List<ProviderConfig>> runSetupWizard() async {
             selectedModel = modelChoice;
           }
         }
-        pool.add(ProviderConfig(
+        final newConfig = ProviderConfig(
           type: 'openrouter',
           apiKey: apiKey,
           model: selectedModel,
-        ));
+        );
+        final idx = pool.indexWhere((p) => p.type == 'openrouter');
+        if (idx != -1) {
+          pool[idx] = newConfig;
+        } else {
+          pool.add(newConfig);
+        }
         print('\n\x1B[32m✓ OpenRouter ($selectedModel) added to the pool!\x1B[0m\n');
       } catch (e) {
         print('\n\x1B[31m❌ OpenRouter connection failed: $e\x1B[0m\n');

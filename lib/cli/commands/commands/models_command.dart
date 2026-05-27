@@ -56,9 +56,9 @@ class ModelsCommand extends InteractiveCommand {
       stdout.write(ChromeAura.clearScreen);
       stdout.write(ChromeAura.cursorHome);
       stdout.writeln('${ChromeAura.chrome}┌${ChromeAura.hLine * (w - 2)}┐${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.bold} 🔱 FETCHING AVAILABLE API MODELS ${' ' * (w - 36)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.bold} 🔱 FETCHING MODELS FOR [${pool.first.type.toUpperCase()}] ${' ' * (w - 27 - pool.first.type.length)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.chrome}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist} Pinging configured APIs (Gemini, Groq, Ollama)... ${' ' * (w - 50)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist} Pinging active primary provider API... ${' ' * (w - 42)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist} Please wait while we retrieve the list of active models... ${' ' * (w - 60)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.chrome}└${ChromeAura.hLine * (w - 2)}┘${ChromeAura.reset}');
     }
@@ -68,8 +68,8 @@ class ModelsCommand extends InteractiveCommand {
     final List<ModelOption> options = [];
     final Map<String, String> errors = {};
 
-    // Fetch models concurrently
-    final fetchFutures = pool.map((provider) async {
+    // Fetch models only for the active primary provider (as requested)
+    final fetchFutures = [pool.first].map((provider) async {
       List<String> models = [];
       try {
         if (provider.type == 'gemini') {
@@ -84,6 +84,8 @@ class ModelsCommand extends InteractiveCommand {
           } else {
             throw Exception('API Key is empty');
           }
+        } else if (provider.type == 'openrouter') {
+          models = await fetchOpenRouterModels();
         } else if (provider.type == 'ollama') {
           final baseUrl = provider.baseUrl.isNotEmpty ? provider.baseUrl : 'http://localhost:11434';
           models = await fetchOllamaModels(baseUrl, apiKey: provider.apiKey);
@@ -102,6 +104,8 @@ class ModelsCommand extends InteractiveCommand {
           models.addAll(['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash-exp', 'gemini-2.5-flash', 'gemini-2.5-pro']);
         } else if (provider.type == 'groq') {
           models.addAll(['llama-3.3-70b-versatile', 'mixtral-8x7b-32768', 'gemma2-9b-it', 'llama-3.1-8b-instant']);
+        } else if (provider.type == 'openrouter') {
+          models.addAll(['~openai/gpt-latest', '~anthropic/claude-sonnet-latest', 'google/gemini-2.5-flash']);
         } else if (provider.type == 'ollama') {
           models.addAll(['llama3', 'mistral', 'gemma2', 'phi3']);
         } else if (provider.type == 'nvidia') {
@@ -125,7 +129,7 @@ class ModelsCommand extends InteractiveCommand {
 
     // If options are empty, fallback to the provider's configured models directly
     if (options.isEmpty) {
-      for (final provider in pool) {
+      for (final provider in [pool.first]) {
         options.add(ModelOption(
           provider: provider,
           modelName: provider.model,
@@ -162,7 +166,7 @@ class ModelsCommand extends InteractiveCommand {
       stdout.write(ChromeAura.cursorHome);
 
       stdout.writeln('${ChromeAura.chrome}┌${ChromeAura.hLine * (w - 2)}┐${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.bold} 🔱 SELECT ACTIVE PRIMARY LLM MODEL ${' ' * (w - 38)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.bold} 🔱 SELECT ACTIVE LLM MODEL [${pool.first.type.toUpperCase()}] ${' ' * (w - 29 - pool.first.type.length)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.chrome}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist} Use ↑/↓ to navigate, Enter to select & promote to primary.         ${' ' * (w - 68)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist} Press [q] or [Esc] to cancel & discard changes.                  ${' ' * (w - 66)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');

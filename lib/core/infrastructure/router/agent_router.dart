@@ -5,6 +5,7 @@ import '../security/sentry_purity.dart';
 import '../tools/mcp_tools.dart';
 import '../tools/plan_mode_tools.dart';
 import '../../../cli/services/plugin_manager.dart';
+import '../services/speculative_sandbox.dart';
 
 
 
@@ -15,6 +16,9 @@ class AgentRouter {
   /// Hook and permission settings for dynamic plugins
   List<String>? activeAllowedTools;
   HookManager? hooks;
+
+  /// Active speculative sandbox session
+  SpeculativeSandbox? activeSandbox;
 
   /// Tracks all tool executions for the current session.
   /// Used by the Activity Dashboard to display execution history.
@@ -244,10 +248,44 @@ class AgentRouter {
         errorType: ToolErrorType.security,
       );
     } else {
-      final validation = validator.canUseTool(request);
+      ToolRequest actualRequest = request;
+      if (activeSandbox != null) {
+        if (request.name == 'file_write' || request.name == 'file_edit') {
+          final rawPath = (request.params['path'] as String?) ?? (request.params['file_path'] as String?) ?? '';
+          if (rawPath.isNotEmpty) {
+            final interceptedPath = await activeSandbox!.interceptWritePath(rawPath);
+            final modifiedParams = Map<String, dynamic>.from(request.params);
+            if (modifiedParams.containsKey('path')) {
+              modifiedParams['path'] = interceptedPath;
+            }
+            if (modifiedParams.containsKey('file_path')) {
+              modifiedParams['file_path'] = interceptedPath;
+            }
+            actualRequest = ToolRequest(
+              id: request.id,
+              name: request.name,
+              params: modifiedParams,
+            );
+          }
+        } else if (request.name == 'file_read') {
+          final rawPath = (request.params['path'] as String?) ?? '';
+          if (rawPath.isNotEmpty) {
+            final interceptedPath = await activeSandbox!.interceptReadPath(rawPath);
+            final modifiedParams = Map<String, dynamic>.from(request.params);
+            modifiedParams['path'] = interceptedPath;
+            actualRequest = ToolRequest(
+              id: request.id,
+              name: request.name,
+              params: modifiedParams,
+            );
+          }
+        }
+      }
+
+      final validation = validator.canUseTool(actualRequest);
       if (!validation.isAllowed) {
         result = ToolResult(
-          toolUseId: request.id,
+          toolUseId: actualRequest.id,
           content: 'Security Violation: ${validation.reason}',
           isError: true,
           errorType: ToolErrorType.security,
@@ -257,7 +295,7 @@ class AgentRouter {
         HookResult? preResult;
         if (hooks != null) {
           try {
-            preResult = await hooks!.executePreToolHooks(request.name, request.params);
+            preResult = await hooks!.executePreToolHooks(actualRequest.name, actualRequest.params);
           } catch (e) {
             preResult = HookResult(
               decision: HookDecision.deny,
@@ -268,25 +306,25 @@ class AgentRouter {
 
         if (preResult != null && preResult.isDenied) {
           result = ToolResult(
-            toolUseId: request.id,
+            toolUseId: actualRequest.id,
             content: 'Blocked by PreToolUse hook: ${preResult.reason}',
             isError: true,
             errorType: ToolErrorType.security,
           );
         } else {
-          final actualParams = preResult?.modifiedInput ?? request.params;
+          final actualParams = preResult?.modifiedInput ?? actualRequest.params;
           try {
             result = await tool.run(actualParams).timeout(
               const Duration(seconds: 30),
               onTimeout: () => ToolResult(
-                toolUseId: request.id,
-                content: 'Tool "${request.name}" timed out after 30 seconds.',
+                toolUseId: actualRequest.id,
+                content: 'Tool "${actualRequest.name}" timed out after 30 seconds.',
                 isError: true,
                 errorType: ToolErrorType.timeout,
               ),
             );
             result = ToolResult(
-              toolUseId: request.id,
+              toolUseId: actualRequest.id,
               content: result.content,
               isError: result.isError,
               errorType: result.isError
@@ -297,20 +335,20 @@ class AgentRouter {
             // 🔱 POST-TOOL EXECUTION HOOKS (Success or Failure)
             if (hooks != null) {
               if (result.isError) {
-                await hooks!.executePostToolFailureHooks(request.name, actualParams, result.content);
+                await hooks!.executePostToolFailureHooks(actualRequest.name, actualParams, result.content);
               } else {
-                await hooks!.executePostToolHooks(request.name, actualParams, result.content);
+                await hooks!.executePostToolHooks(actualRequest.name, actualParams, result.content);
               }
             }
           } catch (e) {
             result = ToolResult(
-              toolUseId: request.id,
+              toolUseId: actualRequest.id,
               content: 'Execution error: $e',
               isError: true,
               errorType: ToolErrorType.execution,
             );
             if (hooks != null) {
-              await hooks!.executePostToolFailureHooks(request.name, actualParams, e.toString());
+              await hooks!.executePostToolFailureHooks(actualRequest.name, actualParams, e.toString());
             }
           }
         }

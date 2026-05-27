@@ -38,6 +38,7 @@ import 'package:apex_lite/core/domain/entities/tool_entities.dart';
 import 'package:apex_lite/core/infrastructure/prompts/prompt_cache_optimizer.dart';
 import 'package:apex_lite/core/infrastructure/services/secret_guard_service.dart';
 import 'package:apex_lite/core/infrastructure/services/persistent_shell_manager.dart';
+import 'package:apex_lite/core/infrastructure/services/speculative_sandbox.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -542,5 +543,69 @@ TOKEN='ghp_99xYyZz1234567890aBcDeFgHiJkLmNoPqRs'
     expect(logFile.existsSync(), isTrue);
     final logContent = logFile.readAsStringSync();
     expect(logContent.contains('Overwrite?'), isTrue);
+  });
+
+  test('APEX Phase 2: Copy-on-Write (CoW) speculative sandbox redirection', () async {
+    // 1. Seed original file in the sandbox/workspace directory
+    final relativeFilePath = 'lib/models.dart';
+    final testFile = File('$sandboxPath/$relativeFilePath');
+    await testFile.parent.create(recursive: true);
+    await testFile.writeAsString('class User { final String name; }', flush: true);
+
+    // 2. Instantiate and register SpeculativeSandbox
+    final sandbox = SpeculativeSandbox(
+      speculationId: 'spec-tx-unit-test',
+      workspaceCwd: sandboxPath,
+      tempDirPath: sandboxPath, // Keeping tempDirPath inside sandboxPath ensures isPathSafe checks pass
+    );
+    await sandbox.initialize();
+
+    router.activeSandbox = sandbox;
+
+    try {
+      // 3. Write via router (should trigger write redirection and CoW copy)
+      final writeRequest = ToolRequest(
+        id: 'w1',
+        name: 'file_write',
+        params: {
+          'path': relativeFilePath,
+          'content': 'class User { final String name; final int age; }',
+          'force': true,
+        },
+      );
+
+      final writeResult = await router.executeSingleTool(writeRequest);
+      expect(writeResult.isError, isFalse);
+
+      // Verify original file is still untouched
+      final preCommitContent = await testFile.readAsString();
+      expect(preCommitContent, equals('class User { final String name; }'));
+
+      // 4. Read via router (should redirect to speculative overlay)
+      final readRequest = ToolRequest(
+        id: 'r1',
+        name: 'file_read',
+        params: {'path': relativeFilePath},
+      );
+
+      final readResult = await router.executeSingleTool(readRequest);
+      expect(readResult.isError, isFalse);
+      expect(readResult.content.contains('final int age;'), isTrue);
+
+      // 5. Commit changes via sandbox
+      await sandbox.commitChanges();
+
+      // Verify committed content is now in the workspace file
+      final committedContent = await testFile.readAsString();
+      expect(committedContent, equals('class User { final String name; final int age; }'));
+
+      // Verify overlay is cleaned up
+      final overlayExists = await sandbox.overlayDir.exists();
+      expect(overlayExists, isFalse);
+
+    } finally {
+      await sandbox.dispose();
+      router.activeSandbox = null;
+    }
   });
 }

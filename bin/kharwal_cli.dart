@@ -215,6 +215,14 @@ void main(List<String> args) async {
             tools: router.registeredTools,
             onStatus: (status) => forge.onStatus(status),
           );
+        } else if (provider.type == 'openrouter') {
+          return await callDirectOpenRouterModel(
+            redactedHistory,
+            provider.apiKey,
+            provider.model,
+            tools: router.registeredTools,
+            onStatus: (status) => forge.onStatus(status),
+          );
         } else if (provider.type == 'ollama') {
           return await callLocalOllamaModel(
             redactedHistory,

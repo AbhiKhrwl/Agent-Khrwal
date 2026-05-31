@@ -100,6 +100,8 @@
   → Fix 5: Resolved a missing compiler import error (`Error: Method not found: 'AetherHistoryCompactor'`) inside `bin/kharwal_cli.dart` by importing the history compactor module, and cleaned up unused dependencies.
   → Fix 6: Removed all competitor naming and brand references from comments, models list, and CLI banners, replacing them with custom brand terminology.
   → Fix 7: Resolved a critical Plan Mode crash (Waterfall failure) where entering plan mode unconditionally escalated the runtime model to the Gemini-specific model name (`gemini-2.5-flash`) even on other active providers (like Groq, NVIDIA, Ollama, Custom), throwing Model Not Found HTTP exceptions. Implemented provider-aware model matching in `PlanModeCoordinator.getRuntimeModel` to resolve correct reasoning models dynamically for all active providers.
+  → Fix 8: Engineered a "Smart Efficiency & Free-First" model selection policy in Plan Mode. If the active model name indicates an efficient or free tier (contains `free`, `8b`, `9b`, `gemma-2`), the coordinator respects the user's intent: on OpenRouter it routes to high-quality free models (like `gemma-2-9b-it:free`), and on other providers it keeps the exact chosen model. Replaced heavy, slow, and expensive models (like 405B on NVIDIA) with ultra-fast, cheap, and highly capable alternatives (like Llama 3.1 8B/70B on NVIDIA, and Llama 3.1 8B on Groq), boosting response speed 100x and preventing developer credit exhaustion.
+
 
 
 

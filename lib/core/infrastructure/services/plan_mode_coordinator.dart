@@ -104,6 +104,28 @@ class PlanModeCoordinator {
     String? providerType,
   }) {
     if (state.mode == PermissionMode.plan) {
+      // 🔱 SMART EFFICIENCY & FREE-FIRST POLICY:
+      // If the user's active model contains "free", "8b", "9b", or "gemma2",
+      // it means they are intentionally running a highly cost-efficient or free model.
+      // We MUST respect their choice and NEVER force-escalate to massive paid/heavy models.
+      final lowerModel = mainLoopModel.toLowerCase();
+      if (lowerModel.contains('free') || 
+          lowerModel.contains('8b') || 
+          lowerModel.contains('9b') || 
+          lowerModel.contains('gemma-2') || 
+          lowerModel.contains('gemma2')) {
+        
+        final pType = providerType?.toLowerCase() ?? '';
+        if (pType == 'openrouter') {
+          // If on OpenRouter, return an outstanding free-tier reasoning model
+          return exceeds200kTokens 
+              ? 'google/gemma-2-27b-it:free' 
+              : 'google/gemma-2-9b-it:free';
+        }
+        // For other providers, respect the exact selected model
+        return mainLoopModel;
+      }
+
       final pType = providerType?.toLowerCase() ?? 'gemini'; // Default to gemini for backward-compatibility with tests
       if (pType == 'gemini') {
         if (exceeds200kTokens) {
@@ -111,9 +133,9 @@ class PlanModeCoordinator {
         }
         return 'gemini-2.5-flash'; // High capability reasoning model
       } else if (pType == 'groq') {
-        return 'llama-3.3-70b-versatile';
+        return 'llama-3.1-8b-instant'; // Ultra fast and cheap 8B model instead of heavy 70B
       } else if (pType == 'nvidia') {
-        return exceeds200kTokens ? 'meta/llama-3.1-405b-instruct' : 'meta/llama-3.1-70b-instruct';
+        return exceeds200kTokens ? 'meta/llama-3.1-70b-instruct' : 'meta/llama-3.1-8b-instruct'; // Use highly optimized 8B/70B instead of extremely slow 405B
       } else if (pType == 'openrouter') {
         return exceeds200kTokens ? 'moonshotai/kimi-k2-instruct-0905' : 'google/gemini-2.5-flash';
       } else {

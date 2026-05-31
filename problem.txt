@@ -40,6 +40,9 @@ Solution:
 6. Removed all competitor naming and brand references from comments, models list, and CLI banners, replacing them with custom brand terminology.
 7. Fixed a critical Plan Mode crash (Waterfall failure) where entering plan mode unconditionally escalated the runtime model to the Gemini-specific model name (`gemini-2.5-flash`) even on other active providers (like Groq, NVIDIA, Ollama, Custom), throwing Model Not Found HTTP exceptions. Implemented provider-aware model matching in `PlanModeCoordinator.getRuntimeModel` to resolve correct reasoning models dynamically for all active providers.
 8. Engineered a "Smart Efficiency & Free-First" model selection policy in Plan Mode. If the active model name indicates an efficient or free tier (contains `free`, `8b`, `9b`, `gemma-2`), the coordinator respects the user's intent: on OpenRouter it routes to high-quality free models (like `gemma-2-9b-it:free`), and on other providers it keeps the exact chosen model. Replaced heavy, slow, and expensive models (like 405B on NVIDIA) with ultra-fast, cheap, and highly capable alternatives (like Llama 3.1 8B/70B on NVIDIA, and Llama 3.1 8B on Groq), boosting response speed 100x and preventing developer credit exhaustion.
-
-
-
+9. Fixed a resilience issue where a single API rate-limit, timeout, or model-not-found error on the active provider would immediately abort the request and force-cascade to a completely different provider.
+Solution:
+1. Expanded `PlanModeCoordinator` with `getRuntimeModelList()` that maps out precise active-to-fallback lists based on the newly supplied 2026 reasoning and flash models for NVIDIA, OpenRouter, Gemini, and Groq.
+2. Refactored `getRuntimeModel()` to return the first model in the list, ensuring perfect backward compatibility for tests and existing modules.
+3. Integrated a nested retry-cascade loop inside the Waterfall's provider handler in `kharwal_cli.dart`. If the active model under a specific provider fails, the system tries each of the provider's fallback model candidates in order before declaring a provider-level failure, logging attempts in real-time, and recording intermediate model failures with precise error classifications and cooldowns.
+4. Preserved Ollama and Custom/Generic endpoints to strictly use the user-configured `mainLoopModel`, avoiding blind cloud escalations or connection crashes.

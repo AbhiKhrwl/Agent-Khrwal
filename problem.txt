@@ -38,4 +38,6 @@ Solution:
 4. Resolved a mock callModel history checking issue in the phase3 hardening test suite (`test/phase3_hardening_test.dart`) where injected workspace context system messages masked the active prompt roles, and expanded testing delay bounds to successfully absorb process spawning latency.
 5. Resolved a missing compiler import error (`Error: Method not found: 'AetherHistoryCompactor'`) inside `bin/kharwal_cli.dart` by importing the history compactor module, and cleaned up unused dependencies.
 6. Removed all competitor naming and brand references from comments, models list, and CLI banners, replacing them with custom brand terminology.
+7. Fixed a critical Plan Mode crash (Waterfall failure) where entering plan mode unconditionally escalated the runtime model to the Gemini-specific model name (`gemini-2.5-flash`) even on other active providers (like Groq, NVIDIA, Ollama, Custom), throwing Model Not Found HTTP exceptions. Implemented provider-aware model matching in `PlanModeCoordinator.getRuntimeModel` to resolve correct reasoning models dynamically for all active providers.
+
 

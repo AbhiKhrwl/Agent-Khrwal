@@ -260,6 +260,7 @@ void main(List<String> args) async {
         var targetModel = PlanModeCoordinator.instance.getRuntimeModel(
           mainLoopModel: provider.model,
           exceeds200kTokens: exceeds200k,
+          providerType: provider.type,
         );
 
         // Provider-specific model escalations

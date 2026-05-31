@@ -97,16 +97,29 @@ class PlanModeCoordinator {
   // 1. Dynamic Model Selector (Auto-Escalation)
   // ==========================================
 
-  /// Resolves the optimal runtime model based on permission mode and token sizes.
+  /// Resolves the optimal runtime model based on permission mode, token sizes, and provider type.
   String getRuntimeModel({
     required String mainLoopModel,
     required bool exceeds200kTokens,
+    String? providerType,
   }) {
     if (state.mode == PermissionMode.plan) {
-      if (exceeds200kTokens) {
-        return 'moonshotai/kimi-k2-instruct-0905'; // Escalated standard backup model
+      final pType = providerType?.toLowerCase() ?? 'gemini'; // Default to gemini for backward-compatibility with tests
+      if (pType == 'gemini') {
+        if (exceeds200kTokens) {
+          return 'moonshotai/kimi-k2-instruct-0905'; // Escalated standard backup model
+        }
+        return 'gemini-2.5-flash'; // High capability reasoning model
+      } else if (pType == 'groq') {
+        return 'llama-3.3-70b-versatile';
+      } else if (pType == 'nvidia') {
+        return exceeds200kTokens ? 'meta/llama-3.1-405b-instruct' : 'meta/llama-3.1-70b-instruct';
+      } else if (pType == 'openrouter') {
+        return exceeds200kTokens ? 'moonshotai/kimi-k2-instruct-0905' : 'google/gemini-2.5-flash';
+      } else {
+        // For local Ollama or Custom providers, do not auto-escalate to avoid pulling/calling non-existent models.
+        return mainLoopModel;
       }
-      return 'gemini-2.5-flash'; // High capability reasoning model
     }
     return mainLoopModel; // Revert to standard model for implementation
   }

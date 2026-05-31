@@ -15,6 +15,12 @@ class VirtualConsoleList {
   int _scrollOffsetLines = 0;
   bool bottomLocked = true;
 
+  /// When true, the user has explicitly scrolled up. New appendLog calls
+  /// will NOT auto-snap to bottom, allowing the user to read history
+  /// while the agent is streaming. Reset only by explicit scrollToBottom()
+  /// or when user sends a new message.
+  bool userScrolledUp = false;
+
   VirtualConsoleList();
 
   /// Append a log block. Splits it by newline, wraps it, and updates scroll history.
@@ -38,7 +44,7 @@ class VirtualConsoleList {
       _lastLogWrappedCount = wrappedCount;
     }
 
-    if (bottomLocked) {
+    if (bottomLocked && !userScrolledUp) {
       _scrollOffsetLines = max(0, _wrappedLines.length);
     }
   }
@@ -63,6 +69,31 @@ class VirtualConsoleList {
     appendLog(newContent, terminalWidth);
   }
 
+  /// Inserts a log block before the last log block.
+  void insertLogBeforeLast(String log, int terminalWidth) {
+    if (_rawLogs.isEmpty) {
+      appendLog(log, terminalWidth);
+      return;
+    }
+
+    // 1. Save and remove the last raw log block
+    final lastRaw = _rawLogs.removeLast();
+
+    // 2. Remove the wrapped lines belonging to the last log block
+    if (_wrappedLines.isNotEmpty && _lastLogWrappedCount > 0) {
+      _wrappedLines.removeRange(
+        _wrappedLines.length - _lastLogWrappedCount,
+        _wrappedLines.length,
+      );
+    }
+
+    // 3. Append the new log block (which becomes the second-to-last)
+    appendLog(log, terminalWidth);
+
+    // 4. Append the original last log block back to the end
+    appendLog(lastRaw, terminalWidth);
+  }
+
   /// Removes the last log block entirely.
   void removeLastLog() {
     if (_rawLogs.isEmpty) return;
@@ -74,7 +105,7 @@ class VirtualConsoleList {
       );
     }
     _lastLogWrappedCount = 0;
-    if (bottomLocked) {
+    if (bottomLocked && !userScrolledUp) {
       _scrollOffsetLines = max(0, _wrappedLines.length);
     }
   }
@@ -105,7 +136,7 @@ class VirtualConsoleList {
     } else {
       _lastLogWrappedCount = 0;
     }
-    if (bottomLocked) {
+    if (bottomLocked && !userScrolledUp) {
       _scrollOffsetLines = max(0, _wrappedLines.length);
     } else {
       // Keep scroll offset within bounds
@@ -115,6 +146,7 @@ class VirtualConsoleList {
 
   void scrollUp(int lines, int viewportHeight) {
     bottomLocked = false;
+    userScrolledUp = true;
     _scrollOffsetLines = max(0, _scrollOffsetLines - lines);
   }
 
@@ -123,11 +155,13 @@ class VirtualConsoleList {
     _scrollOffsetLines = min(maxScroll, _scrollOffsetLines + lines);
     if (_scrollOffsetLines >= maxScroll) {
       bottomLocked = true;
+      userScrolledUp = false;
     }
   }
 
   void scrollToBottom(int viewportHeight) {
     bottomLocked = true;
+    userScrolledUp = false;
     _scrollOffsetLines = max(0, _wrappedLines.length - viewportHeight);
   }
 
@@ -166,6 +200,7 @@ class VirtualConsoleList {
     _wrappedLines.clear();
     _scrollOffsetLines = 0;
     bottomLocked = true;
+    userScrolledUp = false;
   }
 
   /// Highlight matches of a search query in our wrapped lines cache

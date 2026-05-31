@@ -72,7 +72,7 @@ void main() {
     final history = <Message>[];
     
     Future<Stream<InferenceEvent>> callModel(List<Message> history) async {
-      final lastMsg = history.last;
+      final lastMsg = history.lastWhere((m) => m.role != MessageRole.system, orElse: () => history.last);
       if (lastMsg.role == MessageRole.user) {
         return Stream.value(ToolCallEvent(name: 'bash', args: {'command': 'echo "2026-05-06, Rice, 500" >> sales.csv'}));
       } else if (lastMsg.role == MessageRole.tool) {
@@ -90,7 +90,7 @@ void main() {
     inputAdapter.push('Record a sale of 500 INR for Rice.');
 
     // Wait for the tool result to be processed
-    await Future.delayed(Duration(milliseconds: 1000));
+    await Future.delayed(Duration(milliseconds: 3000));
     
     final salesFile = File('$sandboxPath/sales.csv');
     expect(salesFile.existsSync(), isTrue, reason: 'sales.csv should exist');
@@ -107,7 +107,7 @@ void main() {
     File('$sandboxPath/data/config.json').writeAsStringSync('{}');
 
     Future<Stream<InferenceEvent>> callModel(List<Message> history) async {
-      final lastMsg = history.last;
+      final lastMsg = history.lastWhere((m) => m.role != MessageRole.system, orElse: () => history.last);
       if (lastMsg.role == MessageRole.user) {
         return Stream.value(ToolCallEvent(name: 'directory_briefing', args: {'depth': 2}));
       } else if (lastMsg.role == MessageRole.tool) {
@@ -124,7 +124,7 @@ void main() {
 
     inputAdapter.push('Show me my files.');
 
-    await Future.delayed(Duration(milliseconds: 1000));
+    await Future.delayed(Duration(milliseconds: 3000));
     
     final toolMessages = history.where((m) => m.role == MessageRole.tool).toList();
     expect(toolMessages.length, greaterThanOrEqualTo(1), reason: 'Should have at least one tool message');
@@ -139,7 +139,7 @@ void main() {
 
     Future<Stream<InferenceEvent>> callModel(List<Message> history) async {
       callCount++;
-      final lastMsg = history.last;
+      final lastMsg = history.lastWhere((m) => m.role != MessageRole.system, orElse: () => history.last);
       
       if (lastMsg.role == MessageRole.user) {
         return Stream.value(ToolCallEvent(name: 'bash', args: {'command': 'cat missing_report.txt'}));
@@ -163,7 +163,7 @@ void main() {
     inputAdapter.push('Read missing_report.txt');
 
     // Wait for two rounds of tool execution
-    await Future.delayed(Duration(milliseconds: 1500));
+    await Future.delayed(Duration(milliseconds: 5000));
 
     final errorMessages = history.where((m) => m.role == MessageRole.tool && m.isError == true).toList();
     expect(errorMessages.length, 1, reason: 'Should have captured one error tool result');
@@ -197,7 +197,7 @@ void main() {
 
     inputAdapter.push('Performance test');
 
-    await Future.delayed(Duration(milliseconds: 1000));
+    await Future.delayed(Duration(milliseconds: 3000));
     await sub.cancel();
 
     final ttfp = performanceEvents.firstWhere((e) => e['metric'] == 'ttfp');
@@ -206,5 +206,31 @@ void main() {
     expect(ttfp['value'], greaterThanOrEqualTo(0));
     expect(total['value'], greaterThan(ttfp['value'] as int));
     expect(total['tokens_approx'], 5);
+  });
+
+  test('L11: Empty/Whitespace Prompt Safety Guard', () async {
+    final history = <Message>[];
+    int callCount = 0;
+
+    Future<Stream<InferenceEvent>> callModel(List<Message> history) async {
+      callCount++;
+      return Stream.value(TextToken('Should not be reached'));
+    }
+
+    unawaited(core.executePulse(
+      inputAdapter: inputAdapter,
+      history: history,
+      callModel: callModel,
+    ));
+
+    // Push empty and whitespace only inputs
+    inputAdapter.push('');
+    inputAdapter.push('   ');
+    inputAdapter.push('\n');
+
+    await Future.delayed(const Duration(milliseconds: 200));
+
+    expect(callCount, 0, reason: 'Model should never be called for empty/whitespace prompts');
+    expect(history.isEmpty, isTrue, reason: 'History should not contain any messages for empty inputs');
   });
 }

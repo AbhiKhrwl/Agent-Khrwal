@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:convert';
 import 'dart:async';
 import 'dart:typed_data';
+import 'process_utils.dart';
 
 class ShellTaskResult {
   final int exitCode;
@@ -64,6 +65,7 @@ class PersistentShellManager {
       arguments,
       workingDirectory: workingDir,
       runInShell: true,
+      environment: ProcessUtils.getCleanEnvironment(),
     );
 
     // Open file write stream

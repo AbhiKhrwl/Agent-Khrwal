@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import '../../domain/interfaces/i_tool.dart';
 import '../../domain/entities/tool_entities.dart';
 import '../security/path_jailer.dart';
+import '../services/process_utils.dart';
 
 /// 🔱 Schema representation of an MCP tool configuration
 class McpToolDefinition {
@@ -42,7 +43,11 @@ class StdioMcpTransport implements McpTransport {
 
   @override
   Future<void> connect() async {
-    _process = await Process.start(executable, arguments);
+    _process = await Process.start(
+      executable,
+      arguments,
+      environment: ProcessUtils.getCleanEnvironment(),
+    );
 
     // Read stdout line-by-line and emit frames
     _process!.stdout

@@ -1,4 +1,4 @@
-/// 🔱 ToolsCommand — Lists and details TUI tool arsenal
+/// ⟨K⟩ ToolsCommand — Lists and details TUI tool arsenal
 library;
 
 import '../apex_command.dart';
@@ -39,7 +39,7 @@ class ToolsCommand extends LocalCommand {
 
     // Header border
     buffer.writeln('  $borderColor╔${ChromeAura.heavyH * innerWidth}╗${ChromeAura.reset}');
-    final title = ' 🔱 AGENT KHARWAL — TOOL ARSENAL';
+    final title = ' ⟨K⟩ AGENT KHARWAL — TOOL ARSENAL';
     final titlePad = innerWidth - title.length;
     buffer.writeln('  $borderColor║${ChromeAura.bold}${ChromeAura.trident}$title${' ' * titlePad.clamp(0, 200)}${ChromeAura.reset}$borderColor║${ChromeAura.reset}');
     buffer.writeln('  $borderColor╠${ChromeAura.heavyH * innerWidth}╣${ChromeAura.reset}');
@@ -111,7 +111,7 @@ class ToolsCommand extends LocalCommand {
 
     // Header border
     buffer.writeln('  $borderColor╔${ChromeAura.heavyH * innerWidth}╗${ChromeAura.reset}');
-    final title = ' 🔱 TOOL DETAILS: $toolName';
+    final title = ' ⟨K⟩ TOOL DETAILS: $toolName';
     final titlePad = innerWidth - title.length;
     buffer.writeln('  $borderColor║${ChromeAura.bold}$catColor$title${' ' * titlePad.clamp(0, 200)}${ChromeAura.reset}$borderColor║${ChromeAura.reset}');
     buffer.writeln('  $borderColor╠${ChromeAura.heavyH * innerWidth}╣${ChromeAura.reset}');

@@ -5,6 +5,7 @@ import '../../domain/interfaces/i_tool.dart';
 import '../../domain/entities/tool_entities.dart';
 import '../security/path_jailer.dart';
 import 'file_edit_tool.dart';
+import '../services/atomic_write_engine.dart';
 
 /// Sandboxed file writing with path jail enforcement.
 ///
@@ -162,7 +163,7 @@ class FileWriteTool implements ITool {
         parentDir.createSync(recursive: true);
       }
 
-      await file.writeAsString(content, flush: true);
+      await AtomicWriteEngine.writeAtomically(file, content);
 
       final backupMsg = backupId != null ? ' [Backup ID: $backupId]' : '';
 

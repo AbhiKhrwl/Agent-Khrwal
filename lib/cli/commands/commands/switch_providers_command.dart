@@ -1,4 +1,4 @@
-/// 🔱 SwitchProvidersCommand — Instantly switch primary provider from configured pool
+/// ⟨K⟩ SwitchProvidersCommand — Instantly switch primary provider from configured pool
 library;
 
 import 'dart:async';
@@ -26,7 +26,7 @@ class SwitchProvidersCommand extends InteractiveCommand {
     final List<ProviderConfig> pool = adapter.activePool as List<ProviderConfig>;
 
     if (pool.isEmpty) {
-      onDone('🔱 Provider pool is empty. Configure providers first using --configure.', shouldQuery: false);
+      onDone('⟨K⟩ Provider pool is empty. Configure providers first using --configure.', shouldQuery: false);
       return;
     }
 
@@ -55,7 +55,7 @@ class SwitchProvidersCommand extends InteractiveCommand {
       stdout.write(ChromeAura.cursorHome);
 
       stdout.writeln('${ChromeAura.chrome}┌${ChromeAura.hLine * (w - 2)}┐${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.bold} 🔱 INSTANT PROVIDER SWITCH ${' ' * (w - 30)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.bold} ⟨K⟩ INSTANT PROVIDER SWITCH ${' ' * (w - 30)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.chrome}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist} Use ↑/↓ to navigate, Enter to select & promote to primary.         ${' ' * (w - 68)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist} Press [q] or [Esc] to cancel. No network calls are made.           ${' ' * (w - 68)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
@@ -148,19 +148,34 @@ class SwitchProvidersCommand extends InteractiveCommand {
         forge.updateConfiguration(newPrimary.model, newPrimary.type);
       }
 
-      // 🔱 Update system prompt in history dynamically to avoid model desync/identity desync
+      // ⟨K⟩ Update system prompt in history dynamically to avoid model desync/identity desync
       final List<Message>? history = context['history'] as List<Message>?;
       final core = context['core'];
       if (history != null && history.isNotEmpty && history.first.role == MessageRole.system) {
-        final List<String> toolNames = core != null
+        var toolNamesList = core != null
             ? (core.router.registeredTools as List)
                 .map((t) => t.name.toString())
                 .toList()
             : const <String>[];
+        if (newPrimary.type == 'ollama' || newPrimary.type == 'custom' || newPrimary.type.startsWith('custom')) {
+          const essentialTools = {
+            'bash',
+            'file_read',
+            'file_write',
+            'file_edit',
+            'directory_briefing',
+            'glob',
+            'grep',
+            'ask_user_question',
+            'enter_plan_mode',
+            'exit_plan_mode',
+          };
+          toolNamesList = toolNamesList.where((t) => essentialTools.contains(t)).toList();
+        }
         final newSystemPrompt = KharwalBehavior.build(
           isAgentMode: true,
           cwd: forge?.sandboxPath ?? './apex_sandbox',
-          toolNames: toolNames,
+          toolNames: toolNamesList,
           isCli: true,
           modelName: newPrimary.model,
         );
@@ -168,11 +183,11 @@ class SwitchProvidersCommand extends InteractiveCommand {
       }
 
       onDone(
-        '🔱 Active provider instantly switched to: ${newPrimary.type.toUpperCase()} • ${newPrimary.model}',
+        '⟨K⟩ Active provider instantly switched to: ${newPrimary.type.toUpperCase()} • ${newPrimary.model}',
         shouldQuery: false,
       );
     } else {
-      onDone('🔱 Provider switch cancelled / unchanged.', shouldQuery: false);
+      onDone('⟨K⟩ Provider switch cancelled / unchanged.', shouldQuery: false);
     }
   }
 }

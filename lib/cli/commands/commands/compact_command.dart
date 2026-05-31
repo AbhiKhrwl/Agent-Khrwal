@@ -1,4 +1,4 @@
-/// 🔱 CompactCommand — Truncates and summarizes conversation logs
+/// ⟨K⟩ CompactCommand — Truncates and summarizes conversation logs
 ///
 /// Invokes AetherCore compaction flow to reclaim prompt token space.
 library;
@@ -26,9 +26,9 @@ class CompactCommand extends LocalCommand {
 
     final success = await core.compactHistory(history, callModel);
     if (success) {
-      return TextResult('🔱 Compaction complete! Conversation history compressed.');
+      return TextResult('⟨K⟩ Compaction complete! Conversation history compressed.');
     } else {
-      return TextResult('🔱 Compaction skipped: History is too short (< 5 messages).');
+      return TextResult('⟨K⟩ Compaction skipped: History is too short (< 5 messages).');
     }
   }
 }

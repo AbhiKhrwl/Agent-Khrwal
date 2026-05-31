@@ -1,4 +1,4 @@
-/// 🔱 ModelsCommand — Interactive alternate-screen primary model selector
+/// ⟨K⟩ ModelsCommand — Interactive alternate-screen primary model selector
 library;
 
 import 'dart:async';
@@ -14,11 +14,13 @@ class ModelOption {
   final ProviderConfig provider;
   final String modelName;
   final bool isCurrentlyConfigured;
+  final bool isFree;
 
   ModelOption({
     required this.provider,
     required this.modelName,
     required this.isCurrentlyConfigured,
+    this.isFree = false,
   });
 }
 
@@ -40,7 +42,7 @@ class ModelsCommand extends InteractiveCommand {
     final List<ProviderConfig> pool = adapter.activePool as List<ProviderConfig>;
 
     if (pool.isEmpty) {
-      onDone('🔱 Models list is empty. Configure models first.', shouldQuery: false);
+      onDone('⟨K⟩ Models list is empty. Configure models first.', shouldQuery: false);
       return;
     }
 
@@ -56,7 +58,7 @@ class ModelsCommand extends InteractiveCommand {
       stdout.write(ChromeAura.clearScreen);
       stdout.write(ChromeAura.cursorHome);
       stdout.writeln('${ChromeAura.chrome}┌${ChromeAura.hLine * (w - 2)}┐${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.bold} 🔱 FETCHING MODELS FOR [${pool.first.type.toUpperCase()}] ${' ' * (w - 27 - pool.first.type.length)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.bold} ⟨K⟩ FETCHING MODELS FOR [${pool.first.type.toUpperCase()}] ${' ' * (w - 27 - pool.first.type.length)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.chrome}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist} Pinging active primary provider API... ${' ' * (w - 42)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist} Please wait while we retrieve the list of active models... ${' ' * (w - 60)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
@@ -105,7 +107,7 @@ class ModelsCommand extends InteractiveCommand {
         } else if (provider.type == 'groq') {
           models.addAll(['llama-3.3-70b-versatile', 'mixtral-8x7b-32768', 'gemma2-9b-it', 'llama-3.1-8b-instant']);
         } else if (provider.type == 'openrouter') {
-          models.addAll(['~openai/gpt-latest', '~anthropic/claude-sonnet-latest', 'google/gemini-2.5-flash']);
+          models.addAll(['~openai/gpt-latest', '~anthropic/sonnet-latest', 'google/gemini-2.5-flash']);
         } else if (provider.type == 'ollama') {
           models.addAll(['llama3', 'mistral', 'gemma2', 'phi3']);
         } else if (provider.type == 'nvidia') {
@@ -116,10 +118,12 @@ class ModelsCommand extends InteractiveCommand {
 
       for (final m in models) {
         if (m.isNotEmpty) {
+          final isFree = m.toLowerCase().contains('free') || provider.type == 'ollama';
           options.add(ModelOption(
             provider: provider,
             modelName: m,
             isCurrentlyConfigured: provider.model == m,
+            isFree: isFree,
           ));
         }
       }
@@ -130,10 +134,12 @@ class ModelsCommand extends InteractiveCommand {
     // If options are empty, fallback to the provider's configured models directly
     if (options.isEmpty) {
       for (final provider in [pool.first]) {
+        final isFree = provider.model.toLowerCase().contains('free') || provider.type == 'ollama';
         options.add(ModelOption(
           provider: provider,
           modelName: provider.model,
           isCurrentlyConfigured: true,
+          isFree: isFree,
         ));
       }
     }
@@ -149,11 +155,40 @@ class ModelsCommand extends InteractiveCommand {
 
     int selectedIdx = 0;
     int scrollOffset = 0;
-    const int viewportSize = 12;
+    const int viewportSize = 10;
     bool committed = false;
     final doneCompleter = Completer<void>();
 
+    String searchQuery = '';
+    bool showOnlyFree = false;
+
+    List<ModelOption> getFilteredOptions() {
+      return options.where((opt) {
+        if (showOnlyFree) {
+          final lowerName = opt.modelName.toLowerCase();
+          if (!lowerName.contains('free')) return false;
+        }
+        if (searchQuery.isNotEmpty) {
+          final lowerName = opt.modelName.toLowerCase();
+          final lowerQuery = searchQuery.toLowerCase();
+          if (!lowerName.contains(lowerQuery)) return false;
+        }
+        return true;
+      }).toList();
+    }
+
     void updateScrollOffset() {
+      final currentFiltered = getFilteredOptions();
+      if (currentFiltered.isEmpty) {
+        selectedIdx = 0;
+        scrollOffset = 0;
+        return;
+      }
+      if (selectedIdx >= currentFiltered.length) {
+        selectedIdx = currentFiltered.length - 1;
+      }
+      if (selectedIdx < 0) selectedIdx = 0;
+
       if (selectedIdx < scrollOffset) {
         scrollOffset = selectedIdx;
       } else if (selectedIdx >= scrollOffset + viewportSize) {
@@ -166,10 +201,41 @@ class ModelsCommand extends InteractiveCommand {
       stdout.write(ChromeAura.cursorHome);
 
       stdout.writeln('${ChromeAura.chrome}┌${ChromeAura.hLine * (w - 2)}┐${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.bold} 🔱 SELECT ACTIVE LLM MODEL [${pool.first.type.toUpperCase()}] ${' ' * (w - 29 - pool.first.type.length)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.bold} ⟨K⟩ SELECT ACTIVE LLM MODEL [${pool.first.type.toUpperCase()}] ${' ' * (w - 29 - pool.first.type.length)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.chrome}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist} Use ↑/↓ to navigate, Enter to select & promote to primary.         ${' ' * (w - 68)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist} Press [q] or [Esc] to cancel & discard changes.                  ${' ' * (w - 66)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
+
+      // Dynamic search bar status
+      final queryText = searchQuery.isEmpty ? 'Type to search...' : searchQuery;
+      final searchLabel = ' 🔍 Search: ';
+      final queryStyled = searchQuery.isEmpty
+          ? '${ChromeAura.mist}$queryText${ChromeAura.reset}'
+          : '${ChromeAura.trident}${ChromeAura.bold}$queryText${ChromeAura.reset}';
+      final searchCleanLength = searchLabel.length + queryText.length;
+      final padding = ' ' * (w - 2 - searchCleanLength).clamp(0, w);
+      stdout.writeln('${ChromeAura.chrome}│$searchLabel$queryStyled$padding${ChromeAura.chrome}│${ChromeAura.reset}');
+
+      // Dynamic free filter status
+      final freeLabel = ' 🆓 [Tab] Toggle Free Filter: ';
+      final freeText = showOnlyFree ? 'ON (Only Free Models)' : 'OFF (All Models)';
+      final freeStyled = showOnlyFree
+          ? '${ChromeAura.sanctum}${ChromeAura.bold}$freeText${ChromeAura.reset}'
+          : '${ChromeAura.mist}$freeText${ChromeAura.reset}';
+      final freeCleanLength = freeLabel.length + freeText.length;
+      final freePadding = ' ' * (w - 2 - freeCleanLength).clamp(0, w);
+      stdout.writeln('${ChromeAura.chrome}│$freeLabel$freeStyled$freePadding${ChromeAura.chrome}│${ChromeAura.reset}');
+
+      stdout.writeln('${ChromeAura.chrome}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
+
+      final navText = ' ↑/↓: Navigate | Enter: Select | Backspace: Del | Tab: Toggle Free';
+      final navLine = ' ℹ️ $navText';
+      final navCleanLength = navLine.length;
+      final navPadding = ' ' * (w - 2 - navCleanLength).clamp(0, w);
+      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist}$navLine$navPadding${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
+      
+      final escLine = ' ℹ️ Esc: Cancel / Exit selection';
+      final escCleanLength = escLine.length;
+      final escPadding = ' ' * (w - 2 - escCleanLength).clamp(0, w);
+      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist}$escLine$escPadding${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.chrome}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
 
       // Errors list (if any provider failed to fetch)
@@ -182,36 +248,56 @@ class ModelsCommand extends InteractiveCommand {
         stdout.writeln('${ChromeAura.chrome}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
       }
 
+      final currentFiltered = getFilteredOptions();
+
       // Draw the scrollable list of models
       for (int i = 0; i < viewportSize; i++) {
         final optionIdx = scrollOffset + i;
-        if (optionIdx >= options.length) {
-          stdout.writeln('${ChromeAura.chrome}│${' ' * (w - 2)}${ChromeAura.chrome}│${ChromeAura.reset}');
+        if (optionIdx >= currentFiltered.length) {
+          if (currentFiltered.isEmpty && i == 0) {
+            final emptyText = ' ⚠️ No models found matching filter/search.';
+            stdout.writeln('${ChromeAura.chrome}│${ChromeAura.wrath}${emptyText.padRight(w - 2)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
+          } else {
+            stdout.writeln('${ChromeAura.chrome}│${' ' * (w - 2)}${ChromeAura.chrome}│${ChromeAura.reset}');
+          }
           continue;
         }
 
-        final opt = options[optionIdx];
+        final opt = currentFiltered[optionIdx];
         final isSelected = optionIdx == selectedIdx;
         
         final prefix = isSelected ? ' ▶ ' : '   ';
+        final providerLabel = '[${opt.provider.type.toUpperCase()}]';
+        final mainPart = '$prefix${providerLabel.padRight(12)} • ${opt.modelName}';
+        
+        final activeText = opt.isCurrentlyConfigured ? ' [ACTIVE]' : '';
+        final freeText = opt.isFree ? ' [FREE]' : '';
+        
+        final totalCleanLength = mainPart.length + activeText.length + freeText.length;
+        final paddingLength = (w - 2 - totalCleanLength).clamp(0, w);
+        final padding = ' ' * paddingLength;
+        
         final style = isSelected ? ChromeAura.oracle : ChromeAura.chrome;
         final bgStyle = isSelected ? ChromeAura.bgActive : '';
         
-        final providerLabel = '[${opt.provider.type.toUpperCase()}]';
-        var lineText = '$prefix${providerLabel.padRight(10)} • ${opt.modelName}';
+        final coloredMain = '$style$mainPart';
+        final coloredActive = opt.isCurrentlyConfigured 
+            ? '${ChromeAura.trident}${ChromeAura.bold} [ACTIVE]${ChromeAura.reset}$bgStyle$style' 
+            : '';
+        final coloredFree = opt.isFree 
+            ? '${ChromeAura.sanctum}${ChromeAura.bold} [FREE]${ChromeAura.reset}$bgStyle$style' 
+            : '';
         
-        if (opt.isCurrentlyConfigured) {
-          lineText += ' (Active)';
-        }
-
-        final coloredLine = '$bgStyle$style${lineText.padRight(w - 2)}${ChromeAura.reset}';
+        final coloredLine = '$bgStyle$coloredMain$coloredActive$coloredFree$padding${ChromeAura.reset}';
         stdout.writeln('${ChromeAura.chrome}│$coloredLine${ChromeAura.chrome}│${ChromeAura.reset}');
       }
 
       stdout.writeln('${ChromeAura.chrome}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
       
       // Footer info
-      final rangeText = ' Showing ${scrollOffset + 1}-${(scrollOffset + viewportSize).clamp(1, options.length)} of ${options.length} models ';
+      final rangeText = currentFiltered.isEmpty
+          ? ' No models '
+          : ' Showing ${scrollOffset + 1}-${(scrollOffset + viewportSize).clamp(1, currentFiltered.length)} of ${currentFiltered.length} models ';
       final paddedRange = rangeText.padLeft((w - 2 + rangeText.length) ~/ 2).padRight(w - 2);
       stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist}$paddedRange${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.chrome}└${ChromeAura.hLine * (w - 2)}┘${ChromeAura.reset}');
@@ -233,18 +319,37 @@ class ModelsCommand extends InteractiveCommand {
         // Arrow codes
         if (bytes.length > 2 && bytes[1] == 0x5b) {
           final code = bytes[2];
-          if (code == 0x41) { // Up
-            selectedIdx = (selectedIdx - 1).clamp(0, options.length - 1);
-            updateScrollOffset();
-          } else if (code == 0x42) { // Down
-            selectedIdx = (selectedIdx + 1).clamp(0, options.length - 1);
-            updateScrollOffset();
+          final currentFiltered = getFilteredOptions();
+          if (currentFiltered.isNotEmpty) {
+            if (code == 0x41) { // Up
+              selectedIdx = (selectedIdx - 1).clamp(0, currentFiltered.length - 1);
+              updateScrollOffset();
+            } else if (code == 0x42) { // Down
+              selectedIdx = (selectedIdx + 1).clamp(0, currentFiltered.length - 1);
+              updateScrollOffset();
+            }
           }
           drawModelsScreen();
+          return;
         }
+      } else if (byte == 0x09) { // Tab key - toggle free filter
+        showOnlyFree = !showOnlyFree;
+        selectedIdx = 0;
+        updateScrollOffset();
+        drawModelsScreen();
+        return;
+      } else if (byte == 0x7f || byte == 0x08) { // Backspace
+        if (searchQuery.isNotEmpty) {
+          searchQuery = searchQuery.substring(0, searchQuery.length - 1);
+          selectedIdx = 0;
+          updateScrollOffset();
+          drawModelsScreen();
+        }
+        return;
       } else if (byte == 0x0d || byte == 0x0a) { // Enter key
-        if (selectedIdx >= 0 && selectedIdx < options.length) {
-          final selectedOption = options[selectedIdx];
+        final currentFiltered = getFilteredOptions();
+        if (selectedIdx >= 0 && selectedIdx < currentFiltered.length) {
+          final selectedOption = currentFiltered[selectedIdx];
           final providerType = selectedOption.provider.type;
           final newModelName = selectedOption.modelName;
 
@@ -268,11 +373,13 @@ class ModelsCommand extends InteractiveCommand {
           }
         }
         if (!doneCompleter.isCompleted) doneCompleter.complete();
-      } else {
-        final char = String.fromCharCode(byte).toLowerCase();
-        if (char == 'q') {
-          if (!doneCompleter.isCompleted) doneCompleter.complete();
-        }
+        return;
+      } else if (byte >= 32 && byte <= 126) { // Printable characters
+        searchQuery += String.fromCharCode(byte);
+        selectedIdx = 0;
+        updateScrollOffset();
+        drawModelsScreen();
+        return;
       }
     };
 
@@ -292,19 +399,34 @@ class ModelsCommand extends InteractiveCommand {
         forge.updateConfiguration(newPrimary.model, newPrimary.type);
       }
 
-      // 🔱 Update system prompt in history dynamically to avoid model desync/identity desync
+      // ⟨K⟩ Update system prompt in history dynamically to avoid model desync/identity desync
       final List<Message>? history = context['history'] as List<Message>?;
       final core = context['core'];
       if (history != null && history.isNotEmpty && history.first.role == MessageRole.system) {
-        final List<String> toolNames = core != null
+        var toolNamesList = core != null
             ? (core.router.registeredTools as List)
                 .map((t) => t.name.toString())
                 .toList()
             : const <String>[];
+        if (newPrimary.type == 'ollama' || newPrimary.type == 'custom' || newPrimary.type.startsWith('custom')) {
+          const essentialTools = {
+            'bash',
+            'file_read',
+            'file_write',
+            'file_edit',
+            'directory_briefing',
+            'glob',
+            'grep',
+            'ask_user_question',
+            'enter_plan_mode',
+            'exit_plan_mode',
+          };
+          toolNamesList = toolNamesList.where((t) => essentialTools.contains(t)).toList();
+        }
         final newSystemPrompt = KharwalBehavior.build(
           isAgentMode: true,
           cwd: forge?.sandboxPath ?? './apex_sandbox',
-          toolNames: toolNames,
+          toolNames: toolNamesList,
           isCli: true,
           modelName: newPrimary.model,
         );
@@ -312,11 +434,11 @@ class ModelsCommand extends InteractiveCommand {
       }
 
       onDone(
-        '🔱 Primary active model updated to: ${newPrimary.type.toUpperCase()} • ${newPrimary.model}',
+        '⟨K⟩ Primary active model updated to: ${newPrimary.type.toUpperCase()} • ${newPrimary.model}',
         shouldQuery: false,
       );
     } else {
-      onDone('🔱 Model selection discarded.', shouldQuery: false);
+      onDone('⟨K⟩ Model selection discarded.', shouldQuery: false);
     }
   }
 }

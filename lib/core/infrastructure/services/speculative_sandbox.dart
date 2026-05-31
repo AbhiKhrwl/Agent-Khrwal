@@ -7,6 +7,7 @@ class SpeculativeSandbox {
   final Directory overlayDir;
 
   final Set<String> _writtenRelativePaths = {};
+  Set<String> get writtenRelativePaths => _writtenRelativePaths;
   bool _isDisposed = false;
 
   SpeculativeSandbox({

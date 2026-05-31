@@ -20,6 +20,9 @@ class AgentRouter {
   /// Active speculative sandbox session
   SpeculativeSandbox? activeSandbox;
 
+  /// Active Magic Doc background restriction file path
+  String? activeMagicDocPath;
+
   /// Tracks all tool executions for the current session.
   /// Used by the Activity Dashboard to display execution history.
   final List<ToolExecutionRecord> executionHistory = [];
@@ -231,6 +234,24 @@ class AgentRouter {
         toolUseId: request.id,
         content: 'Security Violation: Tool "${request.name}" is not authorized by this plugin manifest. '
             'Authorized tools are: [${activeAllowedTools!.join(", ")}].',
+        isError: true,
+        errorType: ToolErrorType.security,
+      );
+    } else if (activeMagicDocPath != null &&
+        (request.name != 'file_edit' && request.name != 'file_write' && request.name != 'Edit')) {
+      result = ToolResult(
+        toolUseId: request.id,
+        content: 'Security Violation: Magic Docs restriction is active. Only edit tools are allowed.',
+        isError: true,
+        errorType: ToolErrorType.security,
+      );
+    } else if (activeMagicDocPath != null &&
+        !((request.params['path'] as String? ?? request.params['file_path'] as String? ?? '') == activeMagicDocPath ||
+            activeMagicDocPath!.endsWith(request.params['path'] as String? ?? request.params['file_path'] as String? ?? '') ||
+            (request.params['path'] as String? ?? request.params['file_path'] as String? ?? '').endsWith(activeMagicDocPath!))) {
+      result = ToolResult(
+        toolUseId: request.id,
+        content: 'Security Violation: Magic Docs restriction is active. You can only edit the document at $activeMagicDocPath.',
         isError: true,
         errorType: ToolErrorType.security,
       );

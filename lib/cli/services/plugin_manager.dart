@@ -51,11 +51,48 @@ abstract class HookHandler {
 class ScriptHookHandler implements HookHandler {
   final String command;
   final String workingDir;
+  final String pluginName;
+  final bool isTrusted;
+  final dynamic adapter;
 
-  ScriptHookHandler({required this.command, required this.workingDir});
+  ScriptHookHandler({
+    required this.command,
+    required this.workingDir,
+    required this.pluginName,
+    required this.isTrusted,
+    required this.adapter,
+  });
 
   @override
   Future<HookResult> execute(Map<String, dynamic> input) async {
+    if (!isTrusted) {
+      final consents = PluginConsentManager.load();
+      bool approved = false;
+      if (consents.containsKey(pluginName)) {
+        approved = consents[pluginName]!;
+      } else {
+        if (adapter != null) {
+          // Dynamic interactive consent popup in alternate buffer
+          final answer = await adapter.askQuestion(
+            'Plugin "$pluginName" wants to execute a shell hook:\n"$command"\nAllow execution?',
+            ['Yes, allow shell hooks', 'No, block shell hooks'],
+          );
+          approved = answer == 'Yes, allow shell hooks';
+          consents[pluginName] = approved;
+          PluginConsentManager.save(consents);
+        } else {
+          approved = false; // secure fallback
+        }
+      }
+
+      if (!approved) {
+        return HookResult(
+          decision: HookDecision.deny,
+          reason: 'Shell hook execution denied by user consent policy for "$pluginName".',
+        );
+      }
+    }
+
     try {
       final shell = Platform.isWindows ? 'cmd.exe' : '/bin/sh';
       final args = Platform.isWindows ? ['/c', command] : ['-c', command];
@@ -342,12 +379,6 @@ class PluginLoader {
 
           final plugin = KharwalPlugin.fromJson(json, entity.path, isTrusted: isTrusted);
 
-          // 🔱 Security verification gate for shell hooks
-          bool hooksApproved = true;
-          if (plugin.hooksRaw.isNotEmpty && !isTrusted) {
-            hooksApproved = await _requestHooksConsent(plugin);
-          }
-
           // Load commands dynamically into registry
           for (final cmdDef in plugin.commands) {
             if (cmdDef.type == 'prompt') {
@@ -372,28 +403,29 @@ class PluginLoader {
             }
           }
 
-          // Load hooks if permitted
-          if (hooksApproved) {
-            plugin.hooksRaw.forEach((eventName, hookData) {
-              if (hookData is Map<String, dynamic>) {
-                final matcher = hookData['matcher'] as String? ?? '.*';
-                final command = hookData['command'] as String? ?? '';
-                if (command.isNotEmpty) {
-                  final regex = RegExp(matcher, caseSensitive: false);
-                  final handler = ScriptHookHandler(
-                    command: command,
-                    workingDir: plugin.pluginDirectory,
-                  );
+          // Register hooks unconditionally (consent checks are evaluated lazily at execution time)
+          plugin.hooksRaw.forEach((eventName, hookData) {
+            if (hookData is Map<String, dynamic>) {
+              final matcher = hookData['matcher'] as String? ?? '.*';
+              final command = hookData['command'] as String? ?? '';
+              if (command.isNotEmpty) {
+                final regex = RegExp(matcher, caseSensitive: false);
+                final handler = ScriptHookHandler(
+                  command: command,
+                  workingDir: plugin.pluginDirectory,
+                  pluginName: plugin.name,
+                  isTrusted: isTrusted,
+                  adapter: context['adapter'],
+                );
 
-                  // Create filter hook handler to execute only on matched tools
-                  final filteredHandler = _FilteredHookHandler(regex, handler);
+                // Create filter hook handler to execute only on matched tools
+                final filteredHandler = _FilteredHookHandler(regex, handler);
 
-                  hookManager.register(eventName, filteredHandler);
-                  hookManager.register('$eventName:$matcher', filteredHandler);
-                }
+                hookManager.register(eventName, filteredHandler);
+                hookManager.register('$eventName:$matcher', filteredHandler);
               }
-            });
-          }
+            }
+          });
 
           loadedPlugins.add(plugin);
           
@@ -404,25 +436,6 @@ class PluginLoader {
         }
       }
     }
-  }
-
-  /// Dynamic user consent verification popup routed directly to alternate buffer TUI askQuestion
-  Future<bool> _requestHooksConsent(KharwalPlugin plugin) async {
-    final adapter = context['adapter'];
-    if (adapter == null) return false;
-
-    // Compile commands list for summary display
-    final hookCommands = plugin.hooksRaw.entries
-        .map((e) => '"${e.key}" -> "${e.value['command']}"')
-        .join(', ');
-
-    // Invoke interactive Vim question card
-    final answer = await adapter.askQuestion(
-      'Plugin "${plugin.name}" wants to register shell hooks: $hookCommands. Allow execution?',
-      ['Yes, allow shell hooks', 'No, block shell hooks'],
-    );
-
-    return answer == 'Yes, allow shell hooks';
   }
 }
 
@@ -440,5 +453,41 @@ class _FilteredHookHandler implements HookHandler {
       return await delegate.execute(input);
     }
     return HookResult(decision: HookDecision.allow);
+  }
+}
+
+/// 🔱 Persistent Consent Manager for third-party plugin shell hooks
+class PluginConsentManager {
+  PluginConsentManager._();
+
+  static String get consentFilePath {
+    final home = Platform.isWindows
+        ? Platform.environment['USERPROFILE']
+        : Platform.environment['HOME'];
+    if (home == null) return '.apex_lite_plugins_consent.json';
+    final separator = Platform.isWindows ? '\\' : '/';
+    return '$home$separator.apex_lite_plugins_consent.json';
+  }
+
+  /// Loads consent map: plugin name -> approved (true/false)
+  static Map<String, bool> load() {
+    final file = File(consentFilePath);
+    if (!file.existsSync()) return {};
+    try {
+      final content = file.readAsStringSync();
+      final decoded = json.decode(content) as Map<String, dynamic>;
+      return decoded.map((key, value) => MapEntry(key, value as bool));
+    } catch (_) {
+      return {};
+    }
+  }
+
+  /// Saves consent map
+  static void save(Map<String, bool> consents) {
+    final file = File(consentFilePath);
+    try {
+      final encoder = const JsonEncoder.withIndent('  ');
+      file.writeAsStringSync(encoder.convert(consents));
+    } catch (_) {}
   }
 }

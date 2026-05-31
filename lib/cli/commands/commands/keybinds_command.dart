@@ -1,4 +1,4 @@
-/// 🔱 KeybindsCommand — Toggles standard input mode vs Vim modal mode
+/// ⟨K⟩ KeybindsCommand — Toggles standard input mode vs Vim modal mode
 library;
 
 import '../apex_command.dart';
@@ -23,8 +23,8 @@ class KeybindsCommand extends LocalCommand {
       adapter.vimModeEnabled = !current;
       
       final msg = !current
-          ? '🔱 Vim Modal Input enabled (NORMAL/INSERT modes active). Press ESC to enter NORMAL mode.'
-          : '🔱 Standard Readline Input enabled (INSERT only mode). Standard arrow keys active.';
+          ? '⟨K⟩ Vim Modal Input enabled (NORMAL/INSERT modes active). Press ESC to enter NORMAL mode.'
+          : '⟨K⟩ Standard Readline Input enabled (INSERT only mode). Standard arrow keys active.';
       
       return TextResult(msg);
     } catch (e) {

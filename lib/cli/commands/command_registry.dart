@@ -1,4 +1,4 @@
-/// 🔱 CommandRegistry — Lazy Loading Command Registry
+/// ⟨K⟩ CommandRegistry — Lazy Loading Command Registry
 ///
 /// Registers commands with aliases, manages retrieval, and holds default mappings.
 library;
@@ -21,6 +21,8 @@ import 'commands/keybinds_command.dart';
 import 'commands/export_command.dart';
 import 'commands/history_command.dart';
 import 'commands/switch_providers_command.dart';
+import 'commands/speculate_command.dart';
+import 'commands/undo_command.dart';
 
 typedef CommandLoader = Future<ApexCommand> Function();
 
@@ -69,6 +71,8 @@ class CommandRegistry {
     register('export', () async => ExportCommand());
     register('history', () async => HistoryCommand());
     register('switch-providers', () async => SwitchProvidersCommand(), aliases: ['switch']);
+    register('speculate', () async => SpeculateCommand());
+    register('undo', () async => UndoCommand(), aliases: ['rollback', 'revert']);
   }
 }
 

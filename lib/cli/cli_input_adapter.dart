@@ -11,6 +11,9 @@ import 'package:apex_lite/cli/services/config_manager.dart';
 import 'package:apex_lite/cli/commands/apex_command.dart';
 import 'package:apex_lite/cli/commands/command_parser.dart';
 import 'package:apex_lite/cli/commands/command_registry.dart';
+import 'package:apex_lite/cli/input/ansi_key_parser.dart';
+import 'package:apex_lite/cli/input/cli_interactive_dialogs.dart';
+import 'package:apex_lite/core/infrastructure/services/session_manager.dart';
 
 /// 🔱 Supreme Lexuray CLI Input Adapter — Raw-Mode Vim-Modal TUI Engine
 ///
@@ -31,6 +34,7 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
   final TerminalForge _forge;
   final _controller = StreamController<InputEvent>();
   final CommandRegistry _registry = CommandRegistry();
+  final SessionManager? sessionManager;
 
   bool _showSuggestions = false;
   List<String> _suggestions = [];
@@ -44,6 +48,7 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
   String _commandBuffer = '';
   int _cursorIndex = 0;
   String _autocompleteHint = '';
+  String? activeSuggestion;
 
   Timer? _pasteFlushTimer;
   bool _pasteLock = false;
@@ -51,14 +56,8 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
   DateTime? _lastByteTime;
   Timer? _pasteTimer;
 
-  // ═══════════════════════════════════════════════════════════════
-  // 🔱 INTERACTIVE PROMPT COMPLETERS
-  // ═══════════════════════════════════════════════════════════════
-  Completer<bool>? _consensusCompleter;
-  Completer<String>? _questionCompleter;
-  List<String>? _questionOptions;
-  int _selectedOptionIndex = 0;
-  String? _questionText;
+  late final CLIInteractiveDialogs _dialogs;
+  final AnsiKeyParser _keyParser = AnsiKeyParser();
 
   // ═══════════════════════════════════════════════════════════════
   // 🔱 COMMAND HISTORY
@@ -73,7 +72,9 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
   final List<ProviderConfig> _activePool;
   bool _vimModeEnabled = true;
 
-  CLIInputAdapter(this._forge, this._activePool);
+  CLIInputAdapter(this._forge, this._activePool, {this.sessionManager}) {
+    _dialogs = CLIInteractiveDialogs(_forge);
+  }
 
   bool get vimModeEnabled => _vimModeEnabled;
   set vimModeEnabled(bool val) {
@@ -119,11 +120,24 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
       return;
     }
 
+    // Enable SGR mouse tracking for wheel scroll support
+    // 1002 = button-event tracking (press/release/drag, NOT idle motion)
+    // 1006 = SGR extended coordinates
+    // NOTE: Avoid 1003 (all motion tracking) — it floods stdin with escape
+    // sequences for every pixel of mouse movement, which triggers the paste
+    // detection system and corrupts the prompt buffer.
+    stdout.write('\x1b[?1002h\x1b[?1006h');
+
     _stdinSub = stdin.listen(
       _onRawBytes,
       onError: (_) {},
       cancelOnError: false,
     );
+  }
+
+  /// Disable mouse tracking — call before dispose.
+  void stopMouseTracking() {
+    stdout.write('\x1b[?1002l\x1b[?1006l');
   }
 
   /// Fallback: line-mode listening for non-interactive terminals.
@@ -138,6 +152,12 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
       if (input.isNotEmpty) {
         _controller.add(InputEvent(type: InputType.text, data: input));
         _forge.onUserInput(input);
+      } else {
+        _forge.logs.appendLog(
+          '  ${ChromeAura.celestial}⚠️ First enter your task prompt or question!${ChromeAura.reset}',
+          _forge.logWidth,
+        );
+        _forge.triggerRedraw();
       }
     });
   }
@@ -151,10 +171,18 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
       rawKeyInterceptor!(bytes);
       return;
     }
+
+    // 🔱 CRITICAL: ANSI escape sequences (mouse events, arrow keys, etc.)
+    // MUST bypass paste detection. Mouse SGR events are 10-16+ bytes long,
+    // which would trigger `bytes.length > 3` paste detection and corrupt
+    // the prompt buffer with decoded garbage characters.
+    final isEscapeSequence = bytes.isNotEmpty && bytes[0] == 0x1b;
+
     final now = DateTime.now();
 
     // Paste detection by inter-keystroke interval
-    if (_mode == VimMode.insert) {
+    // ONLY for printable character input, NEVER for escape sequences
+    if (!isEscapeSequence && _mode == VimMode.insert) {
       final elapsed = _lastByteTime != null
           ? now.difference(_lastByteTime!).inMilliseconds
           : 999;
@@ -174,8 +202,8 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
       }
     }
 
-    // If pasteLock is active, continue buffering
-    if (_pasteLock && _mode == VimMode.insert) {
+    // If pasteLock is active, continue buffering (but not escape sequences)
+    if (!isEscapeSequence && _pasteLock && _mode == VimMode.insert) {
       _pasteTimer?.cancel();
       _pasteBuffer.addAll(bytes);
       _pasteTimer = Timer(const Duration(milliseconds: 15), () {
@@ -201,124 +229,79 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
         cleanText +
         _promptBuffer.substring(_cursorIndex);
     _cursorIndex += cleanText.length;
+    _updateSuggestions();
     _updateAutocompleteHint();
     _forge.triggerRedraw();
   }
 
   void _processKeyBytes(List<int> bytes) {
-    // Parse bytes one at a time for individual key detection
-    var i = 0;
-    while (i < bytes.length) {
-      // Check for ANSI escape sequence: ESC [ ...
-      if (bytes[i] == 0x1b) {
-        if (i + 1 < bytes.length && bytes[i + 1] == 0x5b) {
-          // CSI sequence: ESC [ <params> <final byte>
-          if (i + 2 < bytes.length) {
-            final code = bytes[i + 2];
-            switch (code) {
-              case 0x41: // Arrow Up
-                _handleArrowUp();
-                i += 3;
-                continue;
-              case 0x42: // Arrow Down
-                _handleArrowDown();
-                i += 3;
-                continue;
-              case 0x43: // Arrow Right
-                _handleArrowRight();
-                i += 3;
-                continue;
-              case 0x44: // Arrow Left
-                _handleArrowLeft();
-                i += 3;
-                continue;
-              case 0x48: // Home
-                _handleHome();
-                i += 3;
-                continue;
-              case 0x46: // End
-                _handleEnd();
-                i += 3;
-                continue;
-              case 0x35: // Page Up (ESC [ 5 ~)
-                if (i + 3 < bytes.length && bytes[i + 3] == 0x7e) {
-                  _handlePageUp();
-                  i += 4;
-                  continue;
-                }
-                break;
-              case 0x36: // Page Down (ESC [ 6 ~)
-                if (i + 3 < bytes.length && bytes[i + 3] == 0x7e) {
-                  _handlePageDown();
-                  i += 4;
-                  continue;
-                }
-                break;
-              case 0x33: // Delete (ESC [ 3 ~)
-                if (i + 3 < bytes.length && bytes[i + 3] == 0x7e) {
-                  _handleDelete();
-                  i += 4;
-                  continue;
-                }
-                break;
-            }
-            // Unknown CSI — skip entire sequence
-            i += 3;
-            continue;
-          }
-          i += 2;
-          continue;
-        }
-        // Bare ESC key pressed (no following '[')
-        _handleEscape();
-        i += 1;
-        continue;
-      }
+    final events = _keyParser.parse(bytes);
+    for (final event in events) {
+      _processKeyEvent(event);
+    }
+  }
 
-      // Single byte processing
-      final byte = bytes[i];
-      switch (byte) {
-        case 0x03: // Ctrl+C
-          _handleCtrlC();
-          break;
-        case 0x04: // Ctrl+D (EOF)
-          _handleCtrlD();
-          break;
-        case 0x0c: // Ctrl+L (clear screen)
-          _handleCtrlL();
-          break;
-        case 0x0d: // Enter (carriage return)
-        case 0x0a: // Newline
-          _handleEnter();
-          break;
-        case 0x7f: // Backspace (macOS sends DEL for backspace)
-        case 0x08: // Backspace (standard)
-          _handleBackspace();
-          break;
-        case 0x09: // Tab
-          _handleTab();
-          break;
-        default:
-          // Printable character
-          if (byte >= 0x20 && byte < 0x7f) {
-            _handleCharacter(String.fromCharCode(byte));
-          } else if (byte >= 0x80) {
-            // Multi-byte UTF-8: decode remaining bytes as a single rune
-            final remaining = bytes.sublist(i);
-            try {
-              final decoded = utf8.decode(remaining, allowMalformed: true);
-              if (decoded.isNotEmpty) {
-                _handleCharacter(decoded[0]);
-                // Advance past the UTF-8 byte sequence
-                final runeBytes = utf8.encode(decoded[0]);
-                i += runeBytes.length;
-                continue;
-              }
-            } catch (_) {}
-          }
-          break;
-      }
-      i++;
+  void _processKeyEvent(AnsiKeyEvent event) {
+    switch (event.type) {
+      case AnsiKeyType.arrowUp:
+        _handleArrowUp();
+        break;
+      case AnsiKeyType.arrowDown:
+        _handleArrowDown();
+        break;
+      case AnsiKeyType.arrowLeft:
+        _handleArrowLeft();
+        break;
+      case AnsiKeyType.arrowRight:
+        _handleArrowRight();
+        break;
+      case AnsiKeyType.scrollUp:
+        _handleScrollUp(event.scrollLines);
+        break;
+      case AnsiKeyType.scrollDown:
+        _handleScrollDown(event.scrollLines);
+        break;
+      case AnsiKeyType.pageUp:
+        _handlePageUp();
+        break;
+      case AnsiKeyType.pageDown:
+        _handlePageDown();
+        break;
+      case AnsiKeyType.home:
+        _handleHome();
+        break;
+      case AnsiKeyType.end:
+        _handleEnd();
+        break;
+      case AnsiKeyType.delete:
+        _handleDelete();
+        break;
+      case AnsiKeyType.backspace:
+        _handleBackspace();
+        break;
+      case AnsiKeyType.tab:
+        _handleTab();
+        break;
+      case AnsiKeyType.enter:
+        _handleEnter();
+        break;
+      case AnsiKeyType.escape:
+        _handleEscape();
+        break;
+      case AnsiKeyType.ctrlC:
+        _handleCtrlC();
+        break;
+      case AnsiKeyType.ctrlD:
+        _handleCtrlD();
+        break;
+      case AnsiKeyType.ctrlL:
+        _handleCtrlL();
+        break;
+      case AnsiKeyType.character:
+        if (event.character != null) {
+          _handleCharacter(event.character!);
+        }
+        break;
     }
   }
 
@@ -345,8 +328,38 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
         _forge.triggerRedraw();
         break;
       case VimMode.question:
-        // In question mode with no options, allow free text input
-        if (_questionOptions == null || _questionOptions!.isEmpty) {
+        final options = _dialogs.questionOptions;
+        if (options != null && options.isNotEmpty) {
+          // Support direct digit hotkeys (e.g. '1', '2' to instantly select option)
+          final digit = int.tryParse(char);
+          if (digit != null && digit >= 1 && digit <= options.length) {
+            _dialogs.selectOptionAndResolve(digit - 1);
+            break;
+          }
+
+          // Support direct letter hotkeys (y/n keys)
+          final lowerChar = char.toLowerCase();
+          if (lowerChar == 'y') {
+            final idx = options.indexWhere((opt) {
+              final lowerOpt = opt.toLowerCase();
+              return lowerOpt.startsWith('yes') || lowerOpt.startsWith('allow');
+            });
+            if (idx != -1) {
+              _dialogs.selectOptionAndResolve(idx);
+              break;
+            }
+          } else if (lowerChar == 'n') {
+            final idx = options.indexWhere((opt) {
+              final lowerOpt = opt.toLowerCase();
+              return lowerOpt.startsWith('no') || lowerOpt.startsWith('block');
+            });
+            if (idx != -1) {
+              _dialogs.selectOptionAndResolve(idx);
+              break;
+            }
+          }
+        } else {
+          // In question mode with no options, allow free text input
           _promptBuffer = _promptBuffer.substring(0, _cursorIndex) +
               char +
               _promptBuffer.substring(_cursorIndex);
@@ -450,6 +463,11 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
             _forge.onUserInput(text);
             _controller.add(InputEvent(type: InputType.text, data: text));
           }
+        } else {
+          _forge.logs.appendLog(
+            '  ${ChromeAura.celestial}⚠️ First enter your task prompt or question!${ChromeAura.reset}',
+            _forge.logWidth,
+          );
         }
         _forge.triggerRedraw();
         break;
@@ -492,7 +510,7 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
         }
         break;
       case VimMode.question:
-        if (_questionOptions == null || _questionOptions!.isEmpty) {
+        if (_dialogs.questionOptions == null || _dialogs.questionOptions!.isEmpty) {
           if (_cursorIndex > 0) {
             _promptBuffer = _promptBuffer.substring(0, _cursorIndex - 1) +
                 _promptBuffer.substring(_cursorIndex);
@@ -547,10 +565,8 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
         }
         break;
       case VimMode.question:
-        if (_questionOptions != null && _questionOptions!.isNotEmpty) {
-          _selectedOptionIndex = (_selectedOptionIndex - 1).clamp(0, _questionOptions!.length - 1);
-          _drawQuestionCard();
-          _forge.triggerRedraw();
+        if (_dialogs.questionOptions != null && _dialogs.questionOptions!.isNotEmpty) {
+          _dialogs.handleArrowUp();
         }
         break;
       default:
@@ -586,10 +602,8 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
         }
         break;
       case VimMode.question:
-        if (_questionOptions != null && _questionOptions!.isNotEmpty) {
-          _selectedOptionIndex = (_selectedOptionIndex + 1).clamp(0, _questionOptions!.length - 1);
-          _drawQuestionCard();
-          _forge.triggerRedraw();
+        if (_dialogs.questionOptions != null && _dialogs.questionOptions!.isNotEmpty) {
+          _dialogs.handleArrowDown();
         }
         break;
       default:
@@ -640,20 +654,30 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // 🔱 UNIFIED SCROLL HANDLERS — Work in ALL modes (INSERT, NORMAL, etc.)
+  // ═══════════════════════════════════════════════════════════════
+
+  void _handleScrollUp(int lines) {
+    final viewportHeight = (_forge.viewport.rows - 12).clamp(1, 9999);
+    _forge.logs.scrollUp(lines, viewportHeight);
+    _forge.triggerRedraw();
+  }
+
+  void _handleScrollDown(int lines) {
+    final viewportHeight = (_forge.viewport.rows - 12).clamp(1, 9999);
+    _forge.logs.scrollDown(lines, viewportHeight);
+    _forge.triggerRedraw();
+  }
+
   void _handlePageUp() {
-    if (_mode == VimMode.normal) {
-      final pageSize = (_forge.viewport.rows - 10).clamp(1, 100);
-      _forge.logs.scrollUp(pageSize, _forge.viewport.rows - 10);
-      _forge.triggerRedraw();
-    }
+    final pageSize = (_forge.viewport.rows - 12).clamp(1, 100);
+    _handleScrollUp(pageSize);
   }
 
   void _handlePageDown() {
-    if (_mode == VimMode.normal) {
-      final pageSize = (_forge.viewport.rows - 10).clamp(1, 100);
-      _forge.logs.scrollDown(pageSize, _forge.viewport.rows - 10);
-      _forge.triggerRedraw();
-    }
+    final pageSize = (_forge.viewport.rows - 12).clamp(1, 100);
+    _handleScrollDown(pageSize);
   }
 
   void _handleDelete() {
@@ -668,20 +692,11 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
   }
 
   void _handleCtrlC() {
-    if (_consensusCompleter != null && !_consensusCompleter!.isCompleted) {
-      _consensusCompleter!.complete(false);
-      _consensusCompleter = null;
-      _mode = VimMode.insert;
-      _forge.triggerRedraw();
-      return;
-    }
-    if (_questionCompleter != null && !_questionCompleter!.isCompleted) {
-      _questionCompleter!.complete('cancelled');
-      _questionCompleter = null;
-      _questionOptions = null;
-      _questionText = null;
-      _mode = VimMode.insert;
-      _forge.triggerRedraw();
+    if (_dialogs.isQuestionActive) {
+      _dialogs.handleCtrlC(
+        setMode: (m) => _mode = m,
+        setRawKeyInterceptor: (interceptor) => rawKeyInterceptor = interceptor,
+      );
       return;
     }
     // Default: exit gracefully
@@ -753,8 +768,18 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
       return;
     }
 
-    // Provide autocomplete hints based on common prefixes
     final lower = _promptBuffer.toLowerCase();
+
+    // Prioritize dynamic AI-generated suggestion from Jodidar
+    if (activeSuggestion != null) {
+      final lowerSugg = activeSuggestion!.toLowerCase();
+      if (lowerSugg.startsWith(lower) && lowerSugg.length > lower.length) {
+        _autocompleteHint = activeSuggestion!.substring(lower.length);
+        return;
+      }
+    }
+
+    // Provide autocomplete hints based on common prefixes
     final suggestions = <String>[
       'help me with ',
       'explain how ',
@@ -783,174 +808,35 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
 
   @override
   Future<bool> requestConsensus(List<ToolRequest> requests) async {
-    _consensusCompleter = Completer<bool>();
-
-    // Render the Omega Fortress consensus card into the log viewport
-    final w = _forge.viewport.innerWidth;
-    final buffer = StringBuffer();
-    buffer.writeln('  ${ChromeAura.ember}${ChromeAura.bold}${ChromeAura.cornerTL}${ChromeAura.heavyH * 2} 🛡️ OMEGA FORTRESS — CONSENSUS REQUIRED ${ChromeAura.heavyH * (w - 44)}${ChromeAura.cornerTR}${ChromeAura.reset}');
-    for (final req in requests) {
-      final paramStr = req.params.entries.map((e) => '${e.key}: ${e.value}').join(', ');
-      final truncParam = paramStr.length > w - 20
-          ? '${paramStr.substring(0, w - 23)}...'
-          : paramStr;
-      buffer.writeln('  ${ChromeAura.ember}${ChromeAura.vLine}${ChromeAura.reset} ${ChromeAura.trident}▸${ChromeAura.reset} ${ChromeAura.oracle}${req.name}${ChromeAura.reset} ${ChromeAura.mist}$truncParam${ChromeAura.reset}');
-    }
-    buffer.writeln('  ${ChromeAura.ember}${ChromeAura.vLine}${ChromeAura.reset}');
-    buffer.writeln('  ${ChromeAura.ember}${ChromeAura.vLine}${ChromeAura.reset}  ${ChromeAura.sanctum}[y]${ChromeAura.reset} ${ChromeAura.oracle}Approve${ChromeAura.reset}    ${ChromeAura.wrath}[n]${ChromeAura.reset} ${ChromeAura.oracle}Deny${ChromeAura.reset}    ${ChromeAura.mist}[Ctrl+C] Cancel${ChromeAura.reset}');
-    buffer.write('  ${ChromeAura.ember}${ChromeAura.cornerBL}${ChromeAura.heavyH * w}${ChromeAura.cornerBR}${ChromeAura.reset}');
-
-    _forge.logs.appendLog(buffer.toString(), w);
-
-    // Switch to a temporary consensus listening mode
-    final savedMode = _mode;
-    final savedPrompt = _promptBuffer;
-    final savedCursor = _cursorIndex;
-    _mode = VimMode.question;
-    _promptBuffer = '';
-    _cursorIndex = 0;
-    _forge.triggerRedraw();
-
-    // Wait for y/n key via the _onRawBytes handler
-    // We intercept the next key press in QUESTION mode to resolve this
-    _questionOptions = ['Approve (y)', 'Deny (n)'];
-    _selectedOptionIndex = 0;
-    _questionText = 'Approve tool execution?';
-
-    // Override the question handler to resolve consensus
-    final consensusFuture = _consensusCompleter!.future;
-
-    // The actual y/n handling is done by patching the _resolveQuestion method
-    // We use a timer to poll for single key presses
-    // Temporarily replace stdin handler for consensus
-    rawKeyInterceptor = (bytes) {
-      if (bytes.isEmpty) return;
-      final char = String.fromCharCode(bytes.first).toLowerCase();
-      if (char == 'y') {
-        rawKeyInterceptor = null;
-        _mode = savedMode;
-        _promptBuffer = savedPrompt;
-        _cursorIndex = savedCursor;
-        _questionOptions = null;
-        _questionText = null;
-        _forge.logs.appendLog('  ${ChromeAura.sanctum}✓ Approved${ChromeAura.reset}', w);
-        _forge.triggerRedraw();
-        if (!_consensusCompleter!.isCompleted) {
-          _consensusCompleter!.complete(true);
-        }
-      } else if (char == 'n' || bytes.first == 0x03) {
-        rawKeyInterceptor = null;
-        _mode = savedMode;
-        _promptBuffer = savedPrompt;
-        _cursorIndex = savedCursor;
-        _questionOptions = null;
-        _questionText = null;
-        _forge.logs.appendLog('  ${ChromeAura.wrath}✗ Denied${ChromeAura.reset}', w);
-        _forge.triggerRedraw();
-        if (!_consensusCompleter!.isCompleted) {
-          _consensusCompleter!.complete(false);
-        }
-      }
-    };
-
-    return consensusFuture;
+    return _dialogs.requestConsensus(
+      requests: requests,
+      savedMode: _mode,
+      savedPrompt: _promptBuffer,
+      savedCursor: _cursorIndex,
+      setMode: (m) => _mode = m,
+      setPrompt: (p) => _promptBuffer = p,
+      setCursor: (c) => _cursorIndex = c,
+      setRawKeyInterceptor: (interceptor) => rawKeyInterceptor = interceptor,
+    );
   }
-
-  // ═══════════════════════════════════════════════════════════════
-  // 🔱 INTERACTIVE QUESTION SELECTOR
-  // ═══════════════════════════════════════════════════════════════
 
   Future<String> askQuestion(String question, List<String>? options) async {
-    _questionCompleter = Completer<String>();
-    _questionOptions = options;
-    _questionText = question;
-    _selectedOptionIndex = 0;
-
-    final savedMode = _mode;
-    final savedPrompt = _promptBuffer;
-    final savedCursor = _cursorIndex;
-    final savedHint = _autocompleteHint;
-
-    _mode = VimMode.question;
-    _promptBuffer = '';
-    _cursorIndex = 0;
-    _autocompleteHint = '';
-
-    // Render the question card
-    _drawQuestionCard();
-    _forge.triggerRedraw();
-
-    if (options != null && options.isNotEmpty) {
-      // Arrow-key selector mode: handled by _handleArrowUp/_handleArrowDown
-      // Enter resolves via _resolveQuestion
-    } else {
-      // Free text input mode: handled by _handleCharacter in QUESTION mode
-      // Enter resolves via _resolveQuestion
-    }
-
-    final answer = await _questionCompleter!.future;
-
-    _mode = savedMode;
-    _promptBuffer = savedPrompt;
-    _cursorIndex = savedCursor;
-    _autocompleteHint = savedHint;
-    _questionOptions = null;
-    _questionText = null;
-    _forge.triggerRedraw();
-
-    return answer;
-  }
-
-  void _drawQuestionCard() {
-    final w = _forge.viewport.innerWidth;
-    final buffer = StringBuffer();
-    buffer.writeln('  ${ChromeAura.phantom}${ChromeAura.bold}${ChromeAura.cornerTL}${ChromeAura.heavyH * 2} 💬 AGENT KHARWAL ASKS ${ChromeAura.heavyH * (w - 26)}${ChromeAura.cornerTR}${ChromeAura.reset}');
-    buffer.writeln('  ${ChromeAura.phantom}${ChromeAura.vLine}${ChromeAura.reset} ${ChromeAura.oracle}$_questionText${ChromeAura.reset}');
-    buffer.writeln('  ${ChromeAura.phantom}${ChromeAura.vLine}${ChromeAura.reset}');
-
-    if (_questionOptions != null && _questionOptions!.isNotEmpty) {
-      for (int i = 0; i < _questionOptions!.length; i++) {
-        final isSelected = i == _selectedOptionIndex;
-        final prefix = isSelected
-            ? '${ChromeAura.trident}${ChromeAura.bold}▶${ChromeAura.reset}'
-            : '${ChromeAura.mist} ${ChromeAura.reset}';
-        final optionColor = isSelected ? ChromeAura.oracle : ChromeAura.mist;
-        final bgStyle = isSelected ? ChromeAura.bgActive : '';
-        buffer.writeln('  ${ChromeAura.phantom}${ChromeAura.vLine}${ChromeAura.reset}  $bgStyle$prefix $optionColor[${i + 1}] ${_questionOptions![i]}${ChromeAura.reset}');
-      }
-      buffer.writeln('  ${ChromeAura.phantom}${ChromeAura.vLine}${ChromeAura.reset}');
-      buffer.writeln('  ${ChromeAura.phantom}${ChromeAura.vLine}${ChromeAura.reset}  ${ChromeAura.mist}↑/↓ Navigate  Enter Select${ChromeAura.reset}');
-    } else {
-      buffer.writeln('  ${ChromeAura.phantom}${ChromeAura.vLine}${ChromeAura.reset}  ${ChromeAura.mist}Type your answer and press Enter${ChromeAura.reset}');
-    }
-
-    buffer.write('  ${ChromeAura.phantom}${ChromeAura.cornerBL}${ChromeAura.heavyH * w}${ChromeAura.cornerBR}${ChromeAura.reset}');
-
-    // Update the last log entry with the refreshed card (for arrow highlighting)
-    if (_forge.logs.totalLines > 0) {
-      _forge.logs.updateLastLog(buffer.toString(), w);
-    } else {
-      _forge.logs.appendLog(buffer.toString(), w);
-    }
+    return _dialogs.askQuestion(
+      question: question,
+      options: options,
+      savedMode: _mode,
+      savedPrompt: _promptBuffer,
+      savedCursor: _cursorIndex,
+      savedHint: _autocompleteHint,
+      setMode: (m) => _mode = m,
+      setPrompt: (p) => _promptBuffer = p,
+      setCursor: (c) => _cursorIndex = c,
+      setHint: (h) => _autocompleteHint = h,
+    );
   }
 
   void _resolveQuestion() {
-    if (_questionCompleter == null || _questionCompleter!.isCompleted) return;
-
-    String answer;
-    if (_questionOptions != null && _questionOptions!.isNotEmpty) {
-      answer = _questionOptions![_selectedOptionIndex];
-    } else {
-      answer = _promptBuffer.trim();
-      if (answer.isEmpty) answer = 'Approved / Proceed with default settings.';
-    }
-
-    _forge.logs.appendLog(
-      '  ${ChromeAura.trident}▸${ChromeAura.reset} ${ChromeAura.oracle}$answer${ChromeAura.reset}',
-      _forge.viewport.innerWidth,
-    );
-
-    _questionCompleter!.complete(answer);
+    _dialogs.resolveQuestion(_promptBuffer);
   }
 
   @override
@@ -991,6 +877,7 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
       'callModel': _forge.callModel,
       'forge': _forge,
       'adapter': this,
+      'sessionManager': sessionManager,
     };
 
     if (cmd is LocalCommand) {
@@ -1000,7 +887,7 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
         _forge.logs.appendLog(result.value, _forge.logWidth);
         _forge.triggerRedraw();
       } else if (result is CompactionResult) {
-        _forge.logs.appendLog('🔱 Compacted: ${result.displayText}', _forge.logWidth);
+        _forge.logs.appendLog('${ChromeAura.logoInline} Compacted: ${result.displayText}', _forge.logWidth);
         _forge.triggerRedraw();
       }
     } else if (cmd is InteractiveCommand) {

@@ -39,6 +39,11 @@ import 'package:apex_lite/core/infrastructure/prompts/prompt_cache_optimizer.dar
 import 'package:apex_lite/core/infrastructure/services/secret_guard_service.dart';
 import 'package:apex_lite/core/infrastructure/services/persistent_shell_manager.dart';
 import 'package:apex_lite/core/infrastructure/services/speculative_sandbox.dart';
+import 'package:apex_lite/core/infrastructure/services/memory_dream_scheduler.dart';
+import 'package:apex_lite/core/domain/entities/message.dart';
+import 'package:apex_lite/core/infrastructure/services/session_manager.dart';
+import 'package:apex_lite/core/infrastructure/services/atomic_write_engine.dart';
+import 'package:apex_lite/core/infrastructure/services/streaming_context_scrubber.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -346,6 +351,17 @@ void main() {
     });
     expect(hoverResult.isError, isFalse);
     expect(hoverResult.content.contains('Main entry point'), isTrue);
+
+    // 4. Polyglot hover scanning for Python file
+    final pyPath = 'sample.py';
+    File('$sandboxPath/$pyPath').writeAsStringSync('### Main entry point\ndef main():\n    pass');
+    final pyHoverResult = await lspTool.run({
+      'action': 'hover',
+      'file_path': pyPath,
+      'query': 'def main()'
+    });
+    expect(pyHoverResult.isError, isFalse);
+    expect(pyHoverResult.content.contains('Main entry point'), isTrue);
   });
 
   test('APEX Protocol: tool_search filters by keyword', () async {
@@ -607,5 +623,156 @@ TOKEN='ghp_99xYyZz1234567890aBcDeFgHiJkLmNoPqRs'
       await sandbox.dispose();
       router.activeSandbox = null;
     }
+  });
+
+  test('APEX Phase 2: Background memory consolidation & dream sandboxing', () async {
+    final configDir = '$sandboxPath/.apex_config';
+
+    // 1. Seed sessions directory and 5 dummy session logs
+    final sessionsDir = Directory('$configDir/sessions');
+    await sessionsDir.create(recursive: true);
+
+    for (int i = 1; i <= 5; i++) {
+      final file = File('${sessionsDir.path}/session_old_$i.jsonl');
+      await file.writeAsString('{"role":"user","content":"User message $i"}\n');
+      await file.setLastModified(DateTime.now());
+    }
+
+    final scheduler = MemoryDreamScheduler(
+      apexConfigDir: configDir,
+      currentSessionId: 'session_active',
+    );
+
+    // 2. Gating checks
+    final gatesOpen = await scheduler.checkGatesOpen();
+    expect(gatesOpen, isTrue);
+
+    // 3. Lock acquisition
+    final acquired = await scheduler.tryAcquireLock();
+    expect(acquired, isTrue);
+    expect(await scheduler.lockFile.exists(), isTrue);
+
+    // Duplicate lock attempt must fail
+    final duplicateScheduler = MemoryDreamScheduler(
+      apexConfigDir: configDir,
+      currentSessionId: 'session_duplicate',
+    );
+    final duplicateAcquired = await duplicateScheduler.tryAcquireLock();
+    expect(duplicateAcquired, isFalse);
+
+    // 4. Sandboxed SentryPurity validations under dream mode
+    validator.isDreaming = true;
+
+    // A. Safe read-only command
+    final safeRequest = ToolRequest(
+      name: 'bash',
+      params: {'command': 'ls'},
+    );
+    expect(validator.canUseTool(safeRequest).isAllowed, isTrue);
+
+    // B. Blocked redirection command
+    final unsafeRequest = ToolRequest(
+      name: 'bash',
+      params: {'command': 'cat file.txt > output.txt'},
+    );
+    expect(validator.canUseTool(unsafeRequest).isAllowed, isFalse);
+
+    // C. Allowed write in memory directory
+    final safeWrite = ToolRequest(
+      name: 'file_write',
+      params: {
+        'path': '.apex_config/memory/global_memory.txt',
+        'content': 'knowledge base',
+      },
+    );
+    expect(validator.canUseTool(safeWrite).isAllowed, isTrue);
+
+    // D. Blocked write outside memory directory
+    final unsafeWrite = ToolRequest(
+      name: 'file_write',
+      params: {
+        'path': 'lib/models.dart',
+        'content': 'hacker',
+      },
+    );
+    expect(validator.canUseTool(unsafeWrite).isAllowed, isFalse);
+
+    // Reset dreaming flag
+    validator.isDreaming = false;
+
+    // 5. Clean up lock
+    await scheduler.releaseLock();
+    expect(await scheduler.lockFile.exists(), isFalse);
+  });
+
+  test('APEX Phase 3: SessionManager customBasePath and history restore', () async {
+    final customBase = '$sandboxPath/test_custom_sessions';
+    final sm = SessionManager(customBasePath: customBase);
+    await sm.initialize();
+
+    final sessions = await sm.listSessions();
+    expect(sessions, isEmpty);
+
+    // Create session
+    final sess = await sm.createSession(title: 'Test Session');
+    expect(sm.currentSessionId, equals(sess.id));
+    expect(sm.messages, isEmpty);
+
+    // Add and save messages
+    sm.messages.add(Message(role: MessageRole.user, content: 'Hello World'));
+    await sm.saveCurrentSession();
+
+    // Re-instantiate SessionManager on same path
+    final sm2 = SessionManager(customBasePath: customBase);
+    await sm2.initialize();
+    final sessList = await sm2.listSessions();
+    expect(sessList.length, equals(1));
+    expect(sessList.first.id, equals(sess.id));
+
+    final msgs = await sm2.loadSession(sess.id);
+    expect(msgs.length, equals(1));
+    expect(msgs.first.content, equals('Hello World'));
+
+    // Clean up
+    await sm2.deleteSession(sess.id);
+    final finalSessions = await sm2.listSessions();
+    expect(finalSessions, isEmpty);
+  });
+
+  test('APEX Phase 4: AtomicWriteEngine async and sync write verification', () async {
+    final testFile = File('$sandboxPath/atomic_test.txt');
+
+    // Async write
+    await AtomicWriteEngine.writeAtomically(testFile, 'Async Content');
+    expect(testFile.existsSync(), isTrue);
+    expect(await testFile.readAsString(), equals('Async Content'));
+
+    // Sync write
+    AtomicWriteEngine.writeAtomicallySync(testFile, 'Sync Content');
+    expect(testFile.existsSync(), isTrue);
+    expect(testFile.readAsStringSync(), equals('Sync Content'));
+
+    // Clean up
+    if (testFile.existsSync()) testFile.deleteSync();
+  });
+
+  test('APEX Phase 4: StreamingContextScrubber stateful tag filtering', () {
+    final scrubber = StreamingContextScrubber();
+
+    // 1. Simple scrub
+    final out1 = scrubber.feed('Hello <memory-context>Disposed</memory-context> World');
+    expect(out1, equals('Hello  World'));
+
+    scrubber.reset();
+
+    // 2. Stateful split scrub (tag split across chunk boundary)
+    final out2 = scrubber.feed('Start <memory');
+    expect(out2, equals('Start '));
+
+    final out3 = scrubber.feed('-context> Hidden </memory-');
+    expect(out3, equals(''));
+
+    final out4 = scrubber.feed('context> End');
+    expect(out4, equals(' End'));
   });
 }

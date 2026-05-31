@@ -47,6 +47,9 @@ class DivineSoulTelemetry {
   double _simulatedMemory = 42.4; // MB
   final Random _rng = Random();
 
+  // ── Session Uptime ──
+  final DateTime _sessionStart = DateTime.now();
+
   // ── Tool History ──
   final List<ToolExecution> _toolHistory = [];
   List<String> _toolNames = [];
@@ -93,6 +96,9 @@ class DivineSoulTelemetry {
     }
   }
 
+  /// Public getter for the last frame duration in milliseconds.
+  double get lastFrameMs => _lastFrameDurationUs / 1000.0;
+
   void tick() {
     _pulseTick++;
     _updateResourceSimulation();
@@ -131,11 +137,19 @@ class DivineSoulTelemetry {
     _fetchingGit = true;
 
     try {
+      final cleanEnv = Map<String, String>.from(Platform.environment)
+        ..remove('MallocStackLogging')
+        ..remove('MallocStackLoggingNoCompact')
+        ..remove('MallocLogFile')
+        ..remove('MallocGuardEdges')
+        ..remove('MallocDoNotProtectSentinel');
+
       // 1. Fetch active branch
       final branchResult = await Process.run(
         'git',
         ['rev-parse', '--abbrev-ref', 'HEAD'],
         workingDirectory: '.',
+        environment: cleanEnv,
       ).timeout(const Duration(seconds: 2));
 
       if (branchResult.exitCode == 0) {
@@ -149,6 +163,7 @@ class DivineSoulTelemetry {
         'git',
         ['status', '--short'],
         workingDirectory: '.',
+        environment: cleanEnv,
       ).timeout(const Duration(seconds: 2));
 
       if (statusResult.exitCode == 0) {
@@ -189,11 +204,14 @@ class DivineSoulTelemetry {
       '$themeAura${ChromeAura.cornerTL}${ChromeAura.hLine * (w - 2)}${ChromeAura.cornerTR}$reset'
     );
 
-    // Section 1: Divine Context Orb & State
+    // Section 1: Divine Context Orb & Live State
+    final statusLabel = _isThinking ? 'ACTIVE' : (_activeTool.isNotEmpty ? 'WORKING' : 'READY');
+    final statusAura = _isThinking ? ChromeAura.celestial : (_activeTool.isNotEmpty ? ChromeAura.ember : ChromeAura.sanctum);
+    final headerText = ' ${_renderContextOrb()} ${ChromeAura.bold}${ChromeAura.chrome}TELEMETRY$reset $statusAura$statusLabel$reset';
+    final headerPad = w - _visibleLength(headerText.replaceAll(reset, '').replaceAll(RegExp(r'\x1b\[[0-9;]*[a-zA-Z]'), '')) - 2;
     lines.add(
-      '$themeAura${ChromeAura.vLine}$reset ${_renderContextOrb()} $reset'
-      '${ChromeAura.bold}${ChromeAura.oracle}TELEMETRY$reset'
-      '${' ' * (w - 14)}$themeAura${ChromeAura.vLine}$reset'
+      '$themeAura${ChromeAura.vLine}$reset$headerText'
+      '${' ' * headerPad.clamp(0, 200)}$themeAura${ChromeAura.vLine}$reset'
     );
 
     lines.add(
@@ -264,6 +282,14 @@ class DivineSoulTelemetry {
     lines.add(
       '$themeAura${ChromeAura.vLine}$reset  ${ChromeAura.mist}Tokens: $_totalTokens$reset'
       '${' ' * (w - _visibleLength('  Tokens: $_totalTokens') - 2)}$themeAura${ChromeAura.vLine}$reset'
+    );
+
+    // Session uptime
+    final uptimeDur = DateTime.now().difference(_sessionStart);
+    final uptimeStr = '${uptimeDur.inMinutes}m ${uptimeDur.inSeconds % 60}s';
+    lines.add(
+      '$themeAura${ChromeAura.vLine}$reset  ${ChromeAura.mist}Session: $uptimeStr$reset'
+      '${' ' * (w - _visibleLength('  Session: $uptimeStr') - 2)}$themeAura${ChromeAura.vLine}$reset'
     );
 
     final groups = ToolChrome.groupByCategory(_toolNames);
@@ -353,6 +379,43 @@ class DivineSoulTelemetry {
       '${' ' * (w - _visibleLength('  ') - _visibleLength(sparkline) - 2)}$themeAura${ChromeAura.vLine}$reset'
     );
 
+    // ── Section 6: System Health (inspired by HTML UI) ──
+    lines.add(
+      '$themeAura${ChromeAura.vLine}$reset${ChromeAura.mist}${ChromeAura.hLine * (w - 2)}$reset$themeAura${ChromeAura.vLine}$reset'
+    );
+    lines.add(
+      '$themeAura${ChromeAura.vLine}$reset ${ChromeAura.bold}${ChromeAura.chrome}SYSTEM HEALTH$reset'
+      '${' ' * (w - 16)}$themeAura${ChromeAura.vLine}$reset'
+    );
+
+    // Core Integrity
+    final integrityOk = _simulatedCpu < 80.0;
+    final integrityStatus = integrityOk ? 'OPTIMAL' : 'DEGRADED';
+    final integrityAura = integrityOk ? ChromeAura.sanctum : ChromeAura.wrath;
+    lines.add(
+      '$themeAura${ChromeAura.vLine}$reset  ${ChromeAura.mist}Integrity:$reset '
+      '$integrityAura$integrityStatus$reset'
+      '${' ' * (w - _visibleLength('  Integrity: $integrityStatus') - 2)}$themeAura${ChromeAura.vLine}$reset'
+    );
+
+    // Session Uptime Percentage
+    final uptimePercent = '99.99%';
+    lines.add(
+      '$themeAura${ChromeAura.vLine}$reset  ${ChromeAura.mist}Uptime:$reset '
+      '${ChromeAura.trident}$uptimePercent$reset'
+      '${' ' * (w - _visibleLength('  Uptime: $uptimePercent') - 2)}$themeAura${ChromeAura.vLine}$reset'
+    );
+
+    // Threat Level
+    final hasErrors = _toolHistory.any((t) => t.isError);
+    final threatLevel = hasErrors ? 'ELEVATED' : 'NEGLIGIBLE';
+    final threatAura = hasErrors ? ChromeAura.celestial : ChromeAura.mist;
+    lines.add(
+      '$themeAura${ChromeAura.vLine}$reset  ${ChromeAura.mist}Threat:$reset '
+      '$threatAura$threatLevel$reset'
+      '${' ' * (w - _visibleLength('  Threat: $threatLevel') - 2)}$themeAura${ChromeAura.vLine}$reset'
+    );
+
     // Fill remaining space with empty lines
     final currentLinesCount = lines.length;
     final spacersNeeded = height - currentLinesCount - 1;
@@ -379,14 +442,25 @@ class DivineSoulTelemetry {
       final glyph = glyphs[_pulseTick ~/ 2 % glyphs.length];
       return '${ChromeAura.celestial}$glyph$reset';
     }
-    return '${ChromeAura.mist}🔱$reset';
+    return '${ChromeAura.chrome}⟨${ChromeAura.trident}K${ChromeAura.chrome}⟩$reset';
   }
 
   String _drawResourceBar(double fraction, int width, {required String color}) {
     final filled = (fraction * width).round().clamp(0, width);
     final empty = width - filled;
+
+    // Dynamic threshold color (inspired by HTML UI gradient gauges)
+    String fillColor;
+    if (fraction >= 0.85) {
+      fillColor = ChromeAura.wrath; // Critical red
+    } else if (fraction >= 0.60) {
+      fillColor = ChromeAura.celestial; // Warning amber
+    } else {
+      fillColor = color; // Normal color
+    }
+
     return '${ChromeAura.mist}[$reset'
-        '$color${ChromeAura.block * filled}$reset'
+        '$fillColor${ChromeAura.block * filled}$reset'
         '${ChromeAura.mist}${ChromeAura.dimBlock * empty}$reset'
         '${ChromeAura.mist}]$reset';
   }

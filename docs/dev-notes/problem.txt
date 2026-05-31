@@ -55,3 +55,49 @@
 - Key insight from flutter_gemma 0.15.0 source code (ffi_inference_model.dart:237):
   → FfiInferenceModelSession stores _pendingImage ONLY if supportImage=true.
   → If supportImage=false, imageBytes are silently discarded even if Message.withImage() is used.
+
+--- CLI Input Overhaul & Mouse/Escape Sequence Fix (2026-05-27) ---
+
+- Fixed: Slash commands (dropdown suggestions) and backspace/delete ceased working, and mouse cursor text selection/copy-paste was broken in the CLI after the first agent response.
+  → Root cause: Mouse SGR extended motion tracking (`\x1b[?1003h`) flooded stdin with escape sequences (10-16+ bytes) for every pixel of mouse movement. The paste detection system (detecting bursts of `bytes.length > 3`) misidentified these escape sequences as pasted text, decoding them as UTF-8 and corrupting the `_promptBuffer`.
+  → Fix 1: Added `isEscapeSequence` check (`bytes[0] == 0x1b`) to bypass paste detection. All ANSI escape sequences (mouse events, arrow keys, etc.) now bypass paste detection and go directly to `AnsiKeyParser`.
+  → Fix 2: Added `_updateSuggestions()` to `_flushPasteBuffer()` so pasted slash commands instantly trigger the autocomplete dropdown.
+  → Fix 3: Downgraded SGR mouse tracking from `1003` (all motion tracking) to `1002` (button-event tracking: click, drag, scroll) in both `CLIInputAdapter` and `TerminalForge` to eliminate idle pixel-motion flood while keeping click & scroll selection operational.
+
+--- CLI Supreme Hardening, Task Queue & Non-Blocking Consensus Upgrade (2026-05-27) ---
+
+- Fixed: Agent stops/hangs/repeats mid-task due to multiple progress detection and consensus blocking.
+  → Fix 1: Hardened progress detection (Bug 1) by using request parameters (tool + args) instead of output content for generating Turn Fingerprints.
+  → Fix 2: Delayed waterfall success recording (Bug 2) to only trigger after the first successful token/tool-call arrival, preventing false success registry updates before the stream actually flows.
+  → Fix 3: Intercepted fatal OpenRouter stream errors (Bug 3) and re-routed them to RecoverableErrorEvent so AetherCore can retry instead of crashing.
+  → Fix 4: Enabled priority keyword turn depth scoring (Bug 4) in the history compactor to allow complex keywords to always correctly take priority.
+  → Fix 5: Normalized repeat-guard fingerprints (Bug 5) by sorting them alphabetically before joining to avoid false repetition triggers.
+  → Fix 6: Decoupled and isolated the empty-response retry counter (Bug 6) from overall loop error retries.
+  → Fix 7: Implemented a robust FIFO Task Queue System (Part B) to queue subsequent user requests in a visible queue while AetherCore is busy, and drain them sequentially.
+  → Fix 8: Implemented 15-second auto-deferral timeout (Part C) on Omega Fortress consensus requests to prevent the agent from hanging indefinitely when a user is away.
+
+--- Ollama Model Crash Resolution & Suggestion Latency Optimization (2026-05-28) ---
+
+- Fixed: Local Ollama runner unexpectedly crashed with an HTTP 500 error after a main turn under high prompt/tool payload load, causing cascade failovers in the CLI.
+  → Fix 1: Dynamic allowed tools filtering in model invocation. When Jodidar suggestion coordinator runs in the background (activeAllowedTools = []), tool schemas are completely omitted from the payload to avoid prefill overhead and memory pressure on local Ollama VRAM.
+  → Fix 2: Disabled reasoning for background autocomplete tasks. Serialized the `think` parameter in the POST payload for the local Ollama API, setting it to `false` for background suggestions so they complete instantly instead of thinking for 60+ seconds.
+  → Fix 3: Implemented an enhanced progressive auto-restart retry loop. When local Ollama crashes, the CLI catches the error, waits with progressive backoff (4 seconds on attempt 1, 8 seconds on attempt 2), and automatically retries. This gives local systems up to 12s of total reload time, which is highly effective and completely absorbs disk-to-VRAM loading times for large models (like Gemma 26B).
+  → Fix 4: Classified local Ollama runner crashes and connection refuse/socket errors under a transient `Model Runner Stopped` failure type with a short 5-second cooldown in the health registry to allow smooth automatic recovery without prematurely triggering failovers.
+  → Fix 5: Resolved macOS `MallocStackLogging` console spam during background tasks. When `MallocStackLogging` environment variables are active in the host shell, every process spawned (like git status for the sidebar every 5 seconds) inherits them and prints dyld warnings directly to the terminal stdout/stderr, corrupting the TUI. Created `ProcessUtils.getCleanEnvironment()` to dynamically sanitize the environment block and pass it to all process spawning APIs (Git telemetry, LSP, MCP, persistent shell, ls heartbeat), completely eliminating terminal corruption.
+  → Fix 6: Upgraded the provider framework to support unlimited Custom OpenAI-Compatible Providers. Created `custom_bridge.dart` to dynamically handle generic OpenAI Chat Completions streaming APIs. Integrated the custom provider option `[C]` directly into `setup_wizard.dart`, enabling users to specify a unique provider name/identifier, any custom API Base URL, API key, and model name. The polymorphic health registry automatically registers and tracks real-time availability and failovers for all user-added custom providers!
+
+--- Ollama Memory Recovery & Cognitive Tool Load Optimization (2026-05-28 22:30) ---
+
+- Fixed: Local Ollama model forgets the conversation/directory context, ignores workspace files, and claims "mere paas kuch hoga to banaunga" even after directory briefing, or takes an extremely long time to think.
+  → Fix 1: Filtered tool schemas down to essential developer tools. Local 2B/9B models are heavily overwhelmed by 50+ tool schemas (including all MCPs, task, team, and sync tools) which causes prefill lag and memory saturation. When no specific allowed tools are requested, the CLI now dynamically filters the tools list for `ollama` and `custom` providers down to the 10 essential developer tools (`bash`, `file_read`, `file_write`, `file_edit`, `directory_briefing`, `glob`, `grep`, `ask_user_question`, `enter_plan_mode`, `exit_plan_mode`), reducing schema size by 80%+.
+  → Fix 2: Aligned system prompt tool lists. Configured `bin/kharwal_cli.dart`, `models_command.dart`, and `switch_providers_command.dart` to filter the alphabetical tool names list passed to `KharwalBehavior.build(...)` when local Ollama or custom providers are active, ensuring perfect prompt-to-schema alignment and preventing model confusion.
+  → Fix 3: Injected directory structure on the very first turn. Modified the sandbox awareness logic in `AetherCore` to inject `[WORKSPACE] Current files in working directory` on the first turn (`turnCount == 1`) in addition to every 3rd turn, giving the model instant visibility of the codebase files from its first response.
+- Fixed: The sandboxed shell execution system executed commands stateless, lacking environment variable (`export`), function, alias, and active working directory tracking across isolated process invocations.
+  → Fix 1: Implemented `ApexStatefulShell` in `lib/core/infrastructure/services/apex_stateful_shell.dart` to persistently bootstrap and snapshot env variables, aliases, and working directory state in regular interactive shells (`bash`/`sh`).
+  → Fix 2: Integrated `ApexStatefulShell` into `SpectralOps` constructor asynchronously to prevent startup block, and synchronized working directory changes back to the sandbox boundary.
+  → Fix 3: Decoupled UI-specific Flutter packages like `path_provider` from the core storage logic, initializing them at the top-level UI layer (`lib/main.dart`) to ensure error-free compiling for both pure CLI executables and Flutter apps.
+  → Fix 4: Resolved a mock callModel history checking issue in the phase3 hardening test suite (`test/phase3_hardening_test.dart`) where injected workspace context system messages masked the active prompt roles, and expanded testing delay bounds to successfully absorb process spawning latency.
+  → Fix 5: Resolved a missing compiler import error (`Error: Method not found: 'AetherHistoryCompactor'`) inside `bin/kharwal_cli.dart` by importing the history compactor module, and cleaned up unused dependencies.
+  → Fix 6: Removed all competitor naming and brand references from comments, models list, and CLI banners, replacing them with custom brand terminology.
+
+

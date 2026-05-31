@@ -1,4 +1,4 @@
-/// 🔱 CancelCommand — Safely interrupts ongoing inference / tool execution loops
+/// ⟨K⟩ CancelCommand — Safely interrupts ongoing inference / tool execution loops
 library;
 
 import '../apex_command.dart';
@@ -19,6 +19,6 @@ class CancelCommand extends LocalCommand {
     }
 
     core.requestCancel();
-    return TextResult('🔱 Cancel requested! Loop will abort safely at next checkpoint.');
+    return TextResult('⟨K⟩ Cancel requested! Loop will abort safely at next checkpoint.');
   }
 }

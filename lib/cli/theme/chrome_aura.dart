@@ -143,4 +143,120 @@ class ChromeAura {
   static String boxRow(String left, String fill, String right, int innerWidth,
       {String color = chrome}) =>
       '$color$left${fill * innerWidth}$right$reset';
+
+  // ═══════════════════════════════════════════════════════════════
+  // ⟨K⟩ ASCII ART LOGO — The Geometric Kharwal Identity
+  // ═══════════════════════════════════════════════════════════════
+
+  /// 7-line pixel art mascot — the geometric Kharwal shield/face.
+  /// Renders at ~16 columns wide x 7 rows tall.
+  /// Uses half-block chars (▀▄▐▌█▗▖▘▝) for sub-cell resolution.
+  static const List<String> logoAscii = [
+    ' ▐█  ██▙ ',
+    '  █ ██▘  ',
+    '  ██▌    ',
+    '  █ ██▖  ',
+    ' ▐█  ██▝ ',
+  ];
+
+  /// Compact inline logo for tight spaces (replaces 🔱 emoji).
+  /// Renders as bold chrome ⟨ + bold trident-cyan K + bold chrome ⟩.
+  static String get logoInline =>
+      '$bold$chrome⟨$reset$bold$trident\x1B[1mK$reset$bold$chrome⟩$reset';
+
+  // ═══════════════════════════════════════════════════════════════
+  // ⟨K⟩ HEAVY DOUBLE-LINE BOX CHARACTERS
+  // ═══════════════════════════════════════════════════════════════
+
+  static const String heavyCornerTL = '╔';
+  static const String heavyCornerTR = '╗';
+  static const String heavyCornerBL = '╚';
+  static const String heavyCornerBR = '╝';
+  static const String heavyTeeLeft = '╠';
+  static const String heavyTeeRight = '╣';
+
+  // ═══════════════════════════════════════════════════════════════
+  // ⟨K⟩ GRADIENT & GAUGE HELPERS
+  // ═══════════════════════════════════════════════════════════════
+
+  /// Gradient bar renderer for gauges (inspired by HTML UI gradient gauges).
+  /// Auto-selects color based on fill thresholds: green → amber → red.
+  static String gradientBar(double fraction, int width,
+      {String normalColor = sanctum}) {
+    final filled = (fraction * width).round().clamp(0, width);
+    final empty = width - filled;
+
+    String fillColor;
+    if (fraction >= 0.85) {
+      fillColor = wrath;
+    } else if (fraction >= 0.60) {
+      fillColor = celestial;
+    } else {
+      fillColor = normalColor;
+    }
+
+    return '$fillColor${block * filled}$reset'
+        '$mist${dimBlock * empty}$reset';
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ⟨K⟩ GLOW, BADGE & VISUAL EFFECTS
+  // ═══════════════════════════════════════════════════════════════
+
+  /// Simulated terminal glow — bold + bright foreground for emphasis.
+  static String glow(String text, String aura) => '$bold$aura$text$reset';
+
+  /// Status badge with bracket chrome: [ STATUS: ARMED ]
+  static String statusBadge(String label, String aura) =>
+      '$chrome[ $bold$aura$label$reset $chrome]$reset';
+
+  /// Dashed horizontal line for section dividers.
+  static String dashedHorizon(int width, {String color = mist}) {
+    final buf = StringBuffer();
+    buf.write(color);
+    for (int i = 0; i < width; i++) {
+      buf.write(i % 2 == 0 ? hLine : ' ');
+    }
+    buf.write(reset);
+    return buf.toString();
+  }
+
+  /// Alternating dim/normal scanline aesthetic effect on text lines.
+  static String scanline(String text, int lineIndex) {
+    if (lineIndex % 2 == 1) {
+      return '$dim$text$reset';
+    }
+    return text;
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ⟨K⟩ TIMESTAMP & UTILITY FORMATTERS
+  // ═══════════════════════════════════════════════════════════════
+
+  /// Format a timestamp badge like [10:02:41] in mist color.
+  static String timestamp() {
+    final now = DateTime.now();
+    final h = now.hour.toString().padLeft(2, '0');
+    final m = now.minute.toString().padLeft(2, '0');
+    final s = now.second.toString().padLeft(2, '0');
+    return '$mist[$h:$m:$s]$reset';
+  }
+
+  /// Render shimmer wave on a text string at given tick position.
+  /// Characters near shimmerPos glow bright, others fade to mist.
+  static String shimmerText(String text, int tick) {
+    final shimmerPos = tick % (text.length + 4);
+    final buf = StringBuffer();
+    for (int i = 0; i < text.length; i++) {
+      final distance = (i - shimmerPos).abs();
+      if (distance == 0) {
+        buf.write('$bold$oracle${text[i]}$reset');
+      } else if (distance == 1) {
+        buf.write('$chrome${text[i]}$reset');
+      } else {
+        buf.write('$mist${text[i]}$reset');
+      }
+    }
+    return buf.toString();
+  }
 }

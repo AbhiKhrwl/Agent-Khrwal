@@ -6,6 +6,7 @@ import '../services/process_utils.dart';
 import '../services/persistent_shell_manager.dart';
 import '../security/path_jailer.dart';
 import 'task_tools.dart';
+import '../services/apex_stateful_shell.dart';
 
 /// Sandboxed shell execution for Apex Lite.
 /// Advanced features:
@@ -36,6 +37,8 @@ class SpectralOps {
   final Set<int> _activePids = {};
   final String _shell;
 
+  late final ApexStatefulShell _statefulShell;
+
   SpectralOps({
     required this.workingDirectory,
     this.watchdog,
@@ -49,6 +52,11 @@ class SpectralOps {
     if (!dir.existsSync()) {
       dir.createSync(recursive: true);
     }
+    _statefulShell = ApexStatefulShell(
+      sessionId: 'apex_sess_${DateTime.now().millisecondsSinceEpoch}',
+      initialCwd: workingDirectory,
+    );
+    unawaited(_statefulShell.initSession());
   }
 
   /// 🔱 Vault: Change the active working directory.
@@ -127,6 +135,20 @@ class SpectralOps {
             );
           }
         }
+      }
+
+
+
+      if (_statefulShell.isReady) {
+        final shellRes = await _statefulShell.execute(command, timeout: timeout ?? foregroundBudget);
+        if (_statefulShell.currentCwd != workingDirectory) {
+          setWorkingDirectory(_statefulShell.currentCwd);
+        }
+        return SpectralResult(
+          content: shellRes.output.isEmpty ? '(empty output)' : shellRes.output,
+          exitCode: shellRes.exitCode,
+          isKilled: shellRes.exitCode == 124,
+        );
       }
 
       final cleanEnv = _scrubEnvironment();
@@ -291,10 +313,16 @@ class SpectralOps {
         return;
       }
 
+
+
+      final actualCommand = _statefulShell.isReady
+          ? 'source ${_statefulShell.snapshotPath} >/dev/null 2>&1 || true\n$command'
+          : command;
+
       final manager = PersistentShellManager(
         taskId: taskId,
         command: _shell,
-        arguments: ['-c', command],
+        arguments: ['-c', actualCommand],
         workingDir: workingDirectory,
         logFilePath: outputFile.path,
       );

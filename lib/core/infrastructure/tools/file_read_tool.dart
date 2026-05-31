@@ -4,6 +4,7 @@ import 'package:path/path.dart' as p;
 import '../../domain/interfaces/i_tool.dart';
 import '../../domain/entities/tool_entities.dart';
 import '../security/path_jailer.dart';
+import '../services/magic_docs_coordinator.dart';
 
 /// Sandboxed file reading with path jail enforcement.
 ///
@@ -126,6 +127,11 @@ class FileReadTool implements ITool {
 
       // Read file
       final content = await file.readAsString(encoding: encoding);
+
+      // Register with Magic Docs if eligible
+      try {
+        MagicDocsCoordinator.instance.registerFile(rawPath, content);
+      } catch (_) {}
 
       // Detect binary content (null bytes in first 8KB)
       final rawBytes = await file.openRead(0, 8192).first;

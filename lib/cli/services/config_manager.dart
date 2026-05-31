@@ -3,7 +3,7 @@ import 'dart:io';
 
 /// 🔱 Provider Configuration model for persistent settings
 class ProviderConfig {
-  final String type; // 'gemini', 'groq', 'ollama'
+  final String type; // 'gemini', 'groq', 'nvidia', 'openrouter', 'ollama'
   final String apiKey;
   final String model;
   final String baseUrl; // For Ollama or other custom base URLs

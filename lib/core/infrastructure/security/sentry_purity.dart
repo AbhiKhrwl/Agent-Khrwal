@@ -1,3 +1,4 @@
+import 'package:path/path.dart' as p;
 import '../../domain/entities/tool_entities.dart';
 import 'path_jailer.dart';
 
@@ -11,15 +12,61 @@ class ValidationResult {
 /// Validates tool requests against security policies before execution.
 class SentryPurity {
   final PathJailer _jailer;
+  bool isDreaming = false;
 
   SentryPurity({required String workingDirectory})
     : _jailer = PathJailer(sandboxRoot: workingDirectory);
+
+  String get sandboxRoot => _jailer.sandboxRoot;
+
+  bool _isReadOnlyDreamCommand(String command) {
+    if (command.contains('>') || command.contains('>>') || command.contains('|')) {
+      return false;
+    }
+    final trimmed = command.trim();
+    if (trimmed.isEmpty) return true;
+    final firstWord = trimmed.split(RegExp(r'\s+')).first;
+    const allowed = {'ls', 'find', 'grep', 'cat', 'stat', 'wc', 'head', 'tail'};
+    return allowed.contains(firstWord);
+  }
+
+  bool _isMemoryPath(String path) {
+    if (path.isEmpty) return false;
+    final fullPath = p.normalize(p.isAbsolute(path) ? path : p.join(_jailer.sandboxRoot, path));
+    final memoryDir = p.normalize(p.join(_jailer.sandboxRoot, '.apex_config', 'memory'));
+    return p.isWithin(memoryDir, fullPath) || fullPath == memoryDir;
+  }
 
   ValidationResult canUseTool(ToolRequest request) {
     // Universal validation: ALL tools go through parameter sanitization
     final paramViolation = _validateParameters(request);
     if (paramViolation != null) {
       return ValidationResult(isAllowed: false, reason: paramViolation);
+    }
+
+    if (isDreaming) {
+      if (request.name == 'bash') {
+        final command = (request.params['command'] as String?) ?? '';
+        if (!_isReadOnlyDreamCommand(command)) {
+          return ValidationResult(
+            isAllowed: false,
+            reason: 'Dream Sandbox Violation: Only read-only commands (ls, find, grep, cat, stat, wc, head, tail) are allowed during dreaming.',
+          );
+        }
+      } else if (request.name == 'file_write' || request.name == 'file_edit' || request.name == 'todo_write') {
+        final path = (request.params['path'] as String?) ?? (request.params['file_path'] as String?) ?? '';
+        if (!_isMemoryPath(path)) {
+          return ValidationResult(
+            isAllowed: false,
+            reason: 'Dream Sandbox Violation: Writing is restricted strictly to the memory directory during dreaming.',
+          );
+        }
+      } else if (request.name != 'file_read' && request.name != 'glob' && request.name != 'grep') {
+        return ValidationResult(
+          isAllowed: false,
+          reason: 'Dream Sandbox Violation: Tool "${request.name}" is blocked during dreaming.',
+        );
+      }
     }
 
     if (request.name == 'bash' ||

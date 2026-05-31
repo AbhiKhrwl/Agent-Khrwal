@@ -1,4 +1,4 @@
-/// 🔱 InitCommand — Prompt-driven workspace onboarding skill
+/// ⟨K⟩ InitCommand — Prompt-driven workspace onboarding skill
 ///
 /// Directs the model to survey structure, identify dependencies/configs,
 /// and output developer guidelines customized for the workspace stack.

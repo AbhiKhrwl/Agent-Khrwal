@@ -1,4 +1,4 @@
-/// 🔱 ExitCommand — Restores terminal raw modes and exits cleanly
+/// ⟨K⟩ ExitCommand — Restores terminal raw modes and exits cleanly
 library;
 
 import 'dart:io';

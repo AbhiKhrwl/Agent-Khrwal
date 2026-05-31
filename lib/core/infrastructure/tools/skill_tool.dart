@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import '../../domain/interfaces/i_tool.dart';
 import '../../domain/entities/tool_entities.dart';
+import '../services/apex_curator_engine.dart';
 
 /// Loads skill descriptions/instructions from .apex/skills/<skill_name>/SKILL.md or skills/<skill_name>/SKILL.md
 class SkillTool implements ITool {
@@ -96,6 +97,13 @@ class SkillTool implements ITool {
       }
 
       final content = await file.readAsString();
+
+      // Track skill activity in the curator
+      try {
+        final curator = ApexCuratorEngine(sandboxRoot: sandboxRoot);
+        await curator.trackSkillActivity(skillName);
+      } catch (_) {}
+
       return ToolResult(
         toolUseId: '',
         content: 'Skill Loaded: $skillName\nGuidelines:\n---\n$content',

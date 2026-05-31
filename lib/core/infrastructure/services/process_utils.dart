@@ -3,6 +3,17 @@ import 'dart:async';
 
 /// Recursively kills a process and all its descendants with graceful escalation.
 class ProcessUtils {
+  /// Returns a clean copy of Platform.environment with macOS memory debugging variables removed
+  /// to prevent 'MallocStackLogging' warnings from flooding stderr in Sonoma.
+  static Map<String, String> getCleanEnvironment() {
+    return Map<String, String>.from(Platform.environment)
+      ..remove('MallocStackLogging')
+      ..remove('MallocStackLoggingNoCompact')
+      ..remove('MallocLogFile')
+      ..remove('MallocGuardEdges')
+      ..remove('MallocDoNotProtectSentinel');
+  }
+
   /// Recursively kills a process and all its descendants.
   /// First tries SIGTERM, then escalates to SIGKILL if needed.
   /// Cross-platform: uses pgrep on Linux/macOS, /proc scan on Android, taskkill on Windows.
@@ -44,7 +55,11 @@ class ProcessUtils {
   static Future<List<int>> _getChildPids(int parentPid) async {
     // 1. Try pgrep (works on Linux/macOS, NOT on Android)
     try {
-      final result = await Process.run('pgrep', ['-P', parentPid.toString()]);
+      final result = await Process.run(
+        'pgrep',
+        ['-P', parentPid.toString()],
+        environment: getCleanEnvironment(),
+      );
       if (result.exitCode == 0) {
         return (result.stdout as String)
             .split('\n')

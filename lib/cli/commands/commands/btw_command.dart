@@ -1,4 +1,4 @@
-/// 🔱 BtwCommand — Side-channel query manager
+/// ⟨K⟩ BtwCommand — Side-channel query manager
 ///
 /// Runs model queries on a clean message history list to prevent polluting
 /// the user's primary prompt token cache, showing results in a fullscreen overlay.
@@ -28,7 +28,7 @@ class BtwCommand extends InteractiveCommand {
 
     var question = arguments.trim();
     if (question.isEmpty) {
-      onDone('🔱 Please provide a question, e.g. /btw how does git log work?', shouldQuery: false);
+      onDone('⟨K⟩ Please provide a question, e.g. /btw how does git log work?', shouldQuery: false);
       return;
     }
 

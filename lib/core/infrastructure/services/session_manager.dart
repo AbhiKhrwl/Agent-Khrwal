@@ -1,10 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
-import 'package:path_provider/path_provider.dart';
+
 import '../../domain/entities/message.dart';
 import '../../domain/entities/tool_execution_record.dart';
 import '../../domain/entities/protocol_mode.dart';
 import 'id_service.dart';
+import 'atomic_write_engine.dart';
 
 /// A lightweight chat session — metadata about one conversation.
 class ChatSession {
@@ -55,10 +56,13 @@ class ChatSession {
 ///
 /// Audio bytes are stripped before persist (audio is ephemeral).
 class SessionManager {
+  final String customBasePath;
   late final String _basePath;
   late final String _indexPath;
   bool _initialized = false;
   String? _currentSessionId;
+
+  SessionManager({required this.customBasePath});
 
   /// Callback fired when the session list changes (for UI refresh).
   void Function()? onSessionsChanged;
@@ -78,8 +82,7 @@ class SessionManager {
   /// Initialize the session storage directory.
   Future<void> initialize() async {
     if (_initialized) return;
-    final docs = await getApplicationDocumentsDirectory();
-    _basePath = '${docs.path}/apex_sessions';
+    _basePath = customBasePath;
     _indexPath = '$_basePath/index.json';
     final dir = Directory(_basePath);
     if (!await dir.exists()) {
@@ -105,7 +108,7 @@ class SessionManager {
 
   Future<void> _writeIndex(List<ChatSession> sessions) async {
     final file = File(_indexPath);
-    await file.writeAsString(jsonEncode(sessions.map((s) => s.toJson()).toList()));
+    await AtomicWriteEngine.writeAtomically(file, jsonEncode(sessions.map((s) => s.toJson()).toList()));
   }
 
   // ── CRUD ───────────────────────────────────────────────────────────────
@@ -222,7 +225,7 @@ class SessionManager {
     final file = File('$_basePath/$id/tool_history.json');
     final dir = file.parent;
     if (!await dir.exists()) await dir.create(recursive: true);
-    await file.writeAsString(jsonEncode(records.map((r) => r.toJson()).toList()));
+    await AtomicWriteEngine.writeAtomically(file, jsonEncode(records.map((r) => r.toJson()).toList()));
   }
 
   // ── Internal I/O ───────────────────────────────────────────────────────
@@ -243,7 +246,7 @@ class SessionManager {
     final file = File('$_basePath/$id/messages.json');
     final dir = file.parent;
     if (!await dir.exists()) await dir.create(recursive: true);
-    await file.writeAsString(jsonEncode(msgs.map((m) => m.toJson()).toList()));
+    await AtomicWriteEngine.writeAtomically(file, jsonEncode(msgs.map((m) => m.toJson()).toList()));
   }
 
   Future<void> _ensureInitialized() async {

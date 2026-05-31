@@ -1,4 +1,4 @@
-/// 🔱 ReviewCommand — Prompt-driven code review skill
+/// ⟨K⟩ ReviewCommand — Prompt-driven code review skill
 ///
 /// Injects structured review instructions and custom user sub-parameters
 /// directly into the user message log, triggering autonomous validation.

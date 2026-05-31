@@ -1,4 +1,4 @@
-/// 🔱 CommandParser — Splits raw user inputs into structured command components
+/// ⟨K⟩ CommandParser — Splits raw user inputs into structured command components
 ///
 /// Trims the slash, handles MCP tags, and splits command names from parameters.
 library;

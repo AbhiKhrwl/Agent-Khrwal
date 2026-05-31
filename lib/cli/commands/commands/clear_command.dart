@@ -1,4 +1,4 @@
-/// 🔱 ClearCommand — Clears terminal history and VirtualConsoleList
+/// ⟨K⟩ ClearCommand — Clears terminal history and VirtualConsoleList
 library;
 
 import '../apex_command.dart';

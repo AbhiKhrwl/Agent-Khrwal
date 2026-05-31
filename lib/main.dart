@@ -71,7 +71,7 @@ void main() async {
   // 🔱 MASSIVE UPGRADE: WhatsApp-style session persistence.
   // Load the most recent session on startup instead of creating a new one.
   // Old chats are preserved across app restarts.
-  final sessionManager = SessionManager();
+  final sessionManager = SessionManager(customBasePath: '${docsDir.path}/apex_sessions');
   await sessionManager.initialize();
   final existingSessions = await sessionManager.listSessions();
   if (existingSessions.isNotEmpty) {

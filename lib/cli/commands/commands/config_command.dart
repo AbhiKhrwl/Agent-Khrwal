@@ -1,4 +1,4 @@
-/// 🔱 ConfigCommand — Interactive Alternate-Screen Config Panel
+/// ⟨K⟩ ConfigCommand — Interactive Alternate-Screen Config Panel
 library;
 
 import 'dart:async';
@@ -39,7 +39,7 @@ class ConfigCommand extends InteractiveCommand {
 
       final w = 70;
       stdout.writeln('${ChromeAura.trident}┌${ChromeAura.hLine * (w - 2)}┐${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.trident}│${ChromeAura.bold} 🔱 AGENT KHARWAL — INTERACTIVE PREFERENCES MANAGER ${' ' * (w - 53)}${ChromeAura.reset}${ChromeAura.trident}│${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.trident}│${ChromeAura.bold} ⟨K⟩ AGENT KHARWAL — INTERACTIVE PREFERENCES MANAGER ${' ' * (w - 53)}${ChromeAura.reset}${ChromeAura.trident}│${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.trident}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.trident}│${ChromeAura.mist} Configure priority failover pool, active API models, and options. ${' ' * (w - 66)}${ChromeAura.reset}${ChromeAura.trident}│${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.trident}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
@@ -132,9 +132,9 @@ class ConfigCommand extends InteractiveCommand {
           forge.updateConfiguration(newPrimary.model, newPrimary.type);
         }
       }
-      onDone('🔱 Priority pool configurations updated and saved.', shouldQuery: false);
+      onDone('⟨K⟩ Priority pool configurations updated and saved.', shouldQuery: false);
     } else {
-      onDone('🔱 Settings discarded.', shouldQuery: false);
+      onDone('⟨K⟩ Settings discarded.', shouldQuery: false);
     }
   }
 }

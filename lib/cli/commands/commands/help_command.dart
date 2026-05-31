@@ -1,4 +1,4 @@
-/// 🔱 HelpCommand — Lists all available slash commands
+/// ⟨K⟩ HelpCommand — Lists all available slash commands
 ///
 /// Outputs a premium responsive table showcasing invocation hints and descriptions.
 library;
@@ -32,7 +32,7 @@ class HelpCommand extends LocalCommand {
     buffer.writeln('  ${ChromeAura.chrome}┌${ChromeAura.hLine * innerWidth}┐${ChromeAura.reset}');
     
     // Header title row
-    final title = '🔱 AGENT KHARWAL SLASH COMMANDS';
+    final title = '⟨K⟩ AGENT KHARWAL SLASH COMMANDS';
     final titlePad = (innerWidth - title.length - 2).clamp(0, 200).toInt();
     buffer.writeln('  ${ChromeAura.chrome}│${ChromeAura.reset} ${ChromeAura.bold}${ChromeAura.trident}$title${ChromeAura.reset}${' ' * titlePad} ${ChromeAura.chrome}│${ChromeAura.reset}');
     

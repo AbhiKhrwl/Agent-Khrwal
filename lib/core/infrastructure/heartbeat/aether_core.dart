@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
+import 'dart:convert';
 import 'package:logger/logger.dart';
 import 'dart:typed_data';
+import 'package:path/path.dart' as p;
 import '../../domain/entities/message.dart';
 import '../../domain/entities/inference_event.dart';
 import '../../domain/entities/tool_entities.dart';
@@ -12,6 +14,16 @@ import '../handshake/cipher_protocol.dart';
 import '../router/agent_router.dart';
 import '../../domain/entities/input_event.dart';
 import '../services/id_service.dart';
+import '../services/memory_dream_scheduler.dart';
+import '../services/plan_mode_coordinator.dart';
+import '../services/magic_docs_coordinator.dart';
+import '../services/predictive_suggest_coordinator.dart';
+import '../../../cli/cli_input_adapter.dart';
+import '../../../cli/theme/chrome_aura.dart';
+import '../services/speculative_sandbox.dart';
+import 'history_compactor.dart';
+import 'tool_safety_guard.dart';
+import '../services/process_utils.dart';
 
 /// 🔱 Supreme Fix 1: Random jitter source for exponential backoff.
 final _jitterRng = Random();
@@ -22,8 +34,13 @@ class AetherCore {
   ProtocolMode mode;
   final int maxRetries;
   final logger = Logger();
+  String? sessionId;
 
   ChatMode chatMode;
+
+  late final AetherHistoryCompactor compactor = AetherHistoryCompactor();
+  late final AetherToolSafetyGuard safetyGuard = AetherToolSafetyGuard(router);
+
 
   /// Known fatal engine errors that should NOT be retried
   static const _fatalErrorPatterns = [
@@ -50,6 +67,15 @@ class AetherCore {
   int _noProgressTurnCount = 0;         // Turns with no NEW unique operations
   final Set<String> _seenToolOps = {};  // All unique tool ops this session
   bool _cancelRequested = false;
+
+  // 🔱 Task Queue System: When agent is busy, new user inputs get queued
+  bool _isBusy = false;
+  final List<InputEvent> _taskQueue = [];
+  bool get isBusy => _isBusy;
+  List<InputEvent> get taskQueue => List.unmodifiable(_taskQueue);
+
+  // 🔱 Bug 6 Fix: Separate counter for empty response retries
+  int _emptyResponseRetries = 0;
 
   /// 🔱 Set protocol mode at runtime — allows user to switch between
   /// guardian (ask always), semi (auto-safe), and phantom (full auto).
@@ -122,75 +148,264 @@ class AetherCore {
     required Future<Stream<InferenceEvent>> Function(List<Message> history) callModel,
   }) async {
     await for (final event in inputAdapter.inputChannel) {
-      final String messageContent;
-      final String? imagePath;
-      Message userMsg;
-
-      if (event.type == InputType.image) {
-        imagePath = event.data;
-        messageContent =
-            (event.metadata['prompt'] as String?) ?? 'Describe this image.';
-        userMsg = Message(
-          role: MessageRole.user,
-          content: messageContent,
-          imagePath: imagePath,
-          metadata: {'input_type': 'image'},
-        );
-      } else if (event.type == InputType.voice) {
-        imagePath = null;
-        final audioBytes = event.metadata['audioBytes'] as Uint8List?;
-        messageContent =
-            (event.metadata['prompt'] as String?) ?? 'Transcribe this audio.';
-
-        userMsg = Message(
-          role: MessageRole.user,
-          content: messageContent,
-          imagePath: null,
-          audioPath: event.data,
-          audioBytes: audioBytes,
-          metadata: {'input_type': 'voice'},
-        );
-      } else {
-        imagePath = null;
-        messageContent = event.data;
-        userMsg = Message(
-          role: MessageRole.user,
-          content: messageContent,
-          imagePath: null,
-          metadata: {'input_type': 'text'},
-        );
-      }
-      history.add(userMsg);
-
-      if (event.type == InputType.image) {
+      if (event.type == InputType.text && event.data.trim().isEmpty) {
         _eventController.add({
-          'type': 'user_image',
-          'data': imagePath!,
-          'prompt': messageContent,
-          'timestamp': userMsg.timestamp.toIso8601String(),
+          'type': 'status',
+          'data': '⚠️ Empty prompt received. Please enter your task first.',
         });
-      } else if (event.type == InputType.voice) {
+        continue;
+      }
+
+      // 🔱 TASK QUEUE: If busy, queue this event instead of processing
+      if (_isBusy) {
+        _taskQueue.add(event);
         _eventController.add({
-          'type': 'user_voice',
+          'type': 'task_queued',
           'data': event.data,
-          'prompt': messageContent,
-          'timestamp': userMsg.timestamp.toIso8601String(),
+          'position': _taskQueue.length,
         });
-      } else {
-        _eventController.add({
-          'type': 'user',
-          'data': userMsg.content,
-          'timestamp': userMsg.timestamp.toIso8601String(),
-        });
+        continue;
       }
 
-      _eventController.add({'type': 'status', 'data': 'Processing...'});
+      // Process the current event
+      _isBusy = true;
+      await _processInputEvent(
+        event: event,
+        history: history,
+        callModel: callModel,
+        inputAdapter: inputAdapter,
+      );
+      _isBusy = false;
 
+      // 🔱 DRAIN QUEUE: Process next queued task (FIFO)
+      while (_taskQueue.isNotEmpty && !_cancelRequested) {
+        final nextEvent = _taskQueue.removeAt(0);
+        _eventController.add({
+          'type': 'task_dequeued',
+          'data': nextEvent.data,
+          'remaining': _taskQueue.length,
+        });
+        _isBusy = true;
+        await _processInputEvent(
+          event: nextEvent,
+          history: history,
+          callModel: callModel,
+          inputAdapter: inputAdapter,
+        );
+        _isBusy = false;
+      }
+    }
+  }
+
+  /// 🔱 Extracted helper: processes a single InputEvent end-to-end.
+  /// Called both for direct events and for queued events during drain.
+  Future<void> _processInputEvent({
+    required InputEvent event,
+    required List<Message> history,
+    required Future<Stream<InferenceEvent>> Function(List<Message> history) callModel,
+    required IInputAdapter inputAdapter,
+  }) async {
+    final String messageContent;
+    final String? imagePath;
+    Message userMsg;
+
+    if (event.type == InputType.image) {
+      imagePath = event.data;
+      messageContent =
+          (event.metadata['prompt'] as String?) ?? 'Describe this image.';
+      userMsg = Message(
+        role: MessageRole.user,
+        content: messageContent,
+        imagePath: imagePath,
+        metadata: {'input_type': 'image'},
+      );
+    } else if (event.type == InputType.voice) {
+      imagePath = null;
+      final audioBytes = event.metadata['audioBytes'] as Uint8List?;
+      messageContent =
+          (event.metadata['prompt'] as String?) ?? 'Transcribe this audio.';
+
+      userMsg = Message(
+        role: MessageRole.user,
+        content: messageContent,
+        imagePath: null,
+        audioPath: event.data,
+        audioBytes: audioBytes,
+        metadata: {'input_type': 'voice'},
+      );
+    } else {
+      imagePath = null;
+      messageContent = event.data;
+      userMsg = Message(
+        role: MessageRole.user,
+        content: messageContent,
+        imagePath: null,
+        metadata: {'input_type': 'text'},
+      );
+    }
+    history.add(userMsg);
+
+    if (event.type == InputType.image) {
+      _eventController.add({
+        'type': 'user_image',
+        'data': imagePath!,
+        'prompt': messageContent,
+        'timestamp': userMsg.timestamp.toIso8601String(),
+      });
+    } else if (event.type == InputType.voice) {
+      _eventController.add({
+        'type': 'user_voice',
+        'data': event.data,
+        'prompt': messageContent,
+        'timestamp': userMsg.timestamp.toIso8601String(),
+      });
+    } else {
+      _eventController.add({
+        'type': 'user',
+        'data': userMsg.content,
+        'timestamp': userMsg.timestamp.toIso8601String(),
+      });
+    }
+
+    _eventController.add({'type': 'status', 'data': 'Processing...'});
+
+    final isSpeculation = event.metadata['is_speculation'] == true;
+    if (isSpeculation) {
+      final specId = 'spec_${DateTime.now().millisecondsSinceEpoch}';
+      final tempDirPath = p.join(router.validator.sandboxRoot, '.apex_config', 'temp');
+      final sandbox = SpeculativeSandbox(
+        speculationId: specId,
+        workspaceCwd: router.validator.sandboxRoot,
+        tempDirPath: tempDirPath,
+      );
+      await sandbox.initialize();
+      router.activeSandbox = sandbox;
+      _eventController.add({
+        'type': 'status',
+        'data': '🔱 Speculative Sandbox active (CoW mode). Writes are sandboxed.',
+      });
+    }
+
+    try {
       await _runInternalPulse(
         history: history,
         callModel: callModel,
         inputAdapter: inputAdapter,
       );
+    } finally {
+      if (isSpeculation && router.activeSandbox != null) {
+        await _handleSpeculationReview(router.activeSandbox!, inputAdapter);
+        router.activeSandbox = null;
+      }
+    }
+
+    // Run background Magic Docs update loop & Predictive Prompt Suggestion (Jodidar) if in CLI mode
+    if (inputAdapter is CLIInputAdapter) {
+      unawaited(MagicDocsCoordinator.instance.runUpdates(
+        history: history,
+        callModel: callModel,
+        router: router,
+      ));
+      unawaited(JodidarCoordinator.instance.runPrediction(
+        history: history,
+        callModel: callModel,
+        router: router,
+        inputAdapter: inputAdapter,
+      ));
+    }
+
+    // 🔱 Save active transcript & check dreaming gates
+    if (sessionId != null) {
+      final configDir = p.join(router.validator.sandboxRoot, '.apex_config');
+      final sessionsDir = Directory(p.join(configDir, 'sessions'));
+      if (!sessionsDir.existsSync()) {
+        sessionsDir.createSync(recursive: true);
+      }
+      final transcriptFile = File(p.join(sessionsDir.path, '$sessionId.jsonl'));
+      final jsonLines = history.map((m) => jsonEncode(m.toJson())).join('\n');
+      await transcriptFile.writeAsString('$jsonLines\n', flush: true);
+
+      final scheduler = MemoryDreamScheduler(
+        apexConfigDir: configDir,
+        currentSessionId: sessionId!,
+      );
+      if (await scheduler.checkGatesOpen()) {
+        unawaited(runDreamConsolidation(scheduler, callModel));
+      }
+    }
+  }
+
+  Future<void> runDreamConsolidation(
+    MemoryDreamScheduler scheduler,
+    Future<Stream<InferenceEvent>> Function(List<Message> history) callModel,
+  ) async {
+    final success = await scheduler.tryAcquireLock();
+    if (!success) {
+      logger.d('[DREAM] Lock occupied. Skipping consolidation.');
+      return;
+    }
+
+    _eventController.add({'type': 'status', 'data': 'Consolidating memory...'});
+    logger.d('[DREAM] Memory consolidation started.');
+
+    try {
+      router.validator.isDreaming = true;
+
+      final lastRun = await scheduler.readLastConsolidatedAt();
+      final touched = await scheduler.listSessionsTouchedSince(lastRun);
+
+      final combinedTranscripts = StringBuffer();
+      for (final sId in touched) {
+        final file = File(p.join(scheduler.apexConfigDir, 'sessions', '$sId.jsonl'));
+        if (file.existsSync()) {
+          final lines = await file.readAsLines();
+          for (final line in lines) {
+            try {
+              final json = jsonDecode(line);
+              final role = json['role'] as String;
+              final content = json['content'] as String;
+              combinedTranscripts.writeln('$role: $content');
+            } catch (_) {}
+          }
+        }
+      }
+
+      if (combinedTranscripts.isNotEmpty) {
+        final prompt = 'You are the Memory Consolidator agent. Please review the following conversation transcripts '
+            'and extract key facts, decisions, and progress details. Merge them with existing knowledge and '
+            'format the consolidated output as a clean bulleted list of facts.\n\n'
+            'Transcripts:\n${combinedTranscripts.toString()}';
+
+        final dreamHistory = [
+          Message(role: MessageRole.system, content: 'You are the Memory Consolidator agent.'),
+          Message(role: MessageRole.user, content: prompt),
+        ];
+
+        final stream = await callModel(dreamHistory);
+        final buffer = StringBuffer();
+        await for (final event in stream) {
+          if (event is TextToken) {
+            buffer.write(event.token);
+          }
+        }
+
+        final memoryDir = Directory(p.join(scheduler.apexConfigDir, 'memory'));
+        if (!memoryDir.existsSync()) {
+          memoryDir.createSync(recursive: true);
+        }
+        final globalMemoryFile = File(p.join(memoryDir.path, 'global_memory.txt'));
+        await globalMemoryFile.writeAsString(buffer.toString(), flush: true);
+
+        logger.d('[DREAM] Consolidated memory written to global_memory.txt');
+      }
+
+      await scheduler.updateLastConsolidatedAt(DateTime.now().millisecondsSinceEpoch);
+      logger.d('[DREAM] Memory consolidation completed successfully.');
+    } catch (e) {
+      logger.e('[DREAM] Consolidation error: $e');
+    } finally {
+      router.validator.isDreaming = false;
+      await scheduler.releaseLock();
     }
   }
 
@@ -209,13 +424,14 @@ class AetherCore {
     _seenToolOps.clear();
     _lastToolError = null;
     _sameErrorCount = 0;
+    _emptyResponseRetries = 0; // 🔱 Bug 6 Fix: Reset separate counter
 
     // 🔱 Upgrade #5: We RE-ENABLE XML injection because native function calling
     // on the 2B model causes empty responses and infinite loops. The user PREFERS
     // the XML/JSON tool flow.
     // NOTE: actually, we will remove this and rely on system instruction for bash code blocks.
 
-    _trimHistory(history);
+    compactor.trimHistory(history, chatMode);
 
     int consecutiveErrors = 0;
     int backoffMs = 500; // 🔱 Supreme Fix 1: Starting backoff for exp. delay
@@ -224,10 +440,28 @@ class AetherCore {
     // On-device 2B models need fewer turns for simple tasks and more for
     // complex ones. We dynamically
     // assess complexity from the user's message to save battery + time.
-    final maxTurns = _calcAdaptiveTurnDepth(history);
+    final maxTurns = compactor.calcAdaptiveTurnDepth(history);
     int turnCount = 0;
 
     while (true) {
+      if (_cancelRequested) break;
+
+      // Swarm mailbox approval pause & poll loop
+      while (PlanModeCoordinator.instance.state.awaitingLeaderApproval && !_cancelRequested) {
+        _eventController.add({
+          'type': 'status',
+          'data': '🔱 Awaiting team leader approval for implementation plan...',
+        });
+        await Future.delayed(const Duration(seconds: 2));
+        final approved = PlanModeCoordinator.instance.pollMailboxForApproval('active_agent');
+        if (approved) {
+          _eventController.add({
+            'type': 'status',
+            'data': '🔱 Swarm plan approved by leader! Restrictions lifted.',
+          });
+        }
+      }
+
       if (_cancelRequested) break;
 
       // 🔱 Bug #5 Fix: Turn limit check
@@ -264,15 +498,15 @@ class AetherCore {
       try {
         _eventController.add({'type': 'status', 'data': 'Thinking...'});
 
-        _microCompact(history);
-        _compactSystemMessages(history, turnCount); // 🔱 Supreme Fix 2
+        compactor.microCompact(history);
+        compactor.compactSystemMessages(history, turnCount); // 🔱 Supreme Fix 2
 
         // 🔱 KHARWAL ORIGINAL: SANDBOX AWARENESS INJECTION
         // 2B models forget what's in the working directory between turns.
         // Cloud models (200B+) remember, but our tiny model NEEDS a reminder.
         // Inject a lightweight directory snapshot before each tool turn so the
         // model doesn't hallucinate missing files or re-create existing ones.
-        if (chatMode == ChatMode.letsDo && turnCount > 1 && turnCount % 3 == 0) {
+        if (chatMode == ChatMode.letsDo && (turnCount == 1 || turnCount % 3 == 0)) {
           await _injectSandboxContext(history);
         }
 
@@ -280,14 +514,14 @@ class AetherCore {
         // 🔱 Infinite Memory Architecture: when context grows too large,
         // use the model itself to summarize old messages. This keeps the
         // context window lean while preserving all critical information.
-        await _autoCompactIfNeeded(history, callModel);
+        await compactor.autoCompactIfNeeded(history, callModel, chatMode, sessionId: sessionId, eventController: _eventController);
 
         // 🥁 Strip audio from history BEFORE each model call — prevents
         // re-sending audio on retries and keeps token count within limits.
-        _stripAudioFromHistory(history);
+        compactor.stripAudioFromHistory(history);
         // 🔱 Core Extraction: Strip thinking traces from history too
-        _stripThinkingFromHistory(history);
-        _trimHistory(history);
+        compactor.stripThinkingFromHistory(history);
+        compactor.trimHistory(history, chatMode);
 
         final stopwatch = Stopwatch()..start();
         final stream = await callModel(history);
@@ -328,7 +562,7 @@ class AetherCore {
             // 🔱 DIRECT tool call from SDK — name + args already parsed!
             // 🔱 KHARWAL BUGFIX: The SDK returns args WITH Gemma escape tokens
             // like <|"|> wrapping strings. We MUST sanitize them before execution!
-            final sanitizedArgs = _sanitizeToolParams(event.args);
+            final sanitizedArgs = safetyGuard.sanitizeToolParams(event.args);
 
             final toolId = IdService.generate();
             final request = ToolRequest(
@@ -501,9 +735,9 @@ class AetherCore {
         if (sanitizedText.trim().isEmpty &&
             pendingRequests.isEmpty &&
             chatMode == ChatMode.letsDo &&
-            consecutiveErrors < maxRetries) {
-          consecutiveErrors++;
-          logger.d('🔱 [EmptyResponse] Empty response detected, retry $consecutiveErrors/$maxRetries');
+            _emptyResponseRetries < 2) { // 🔱 Bug 6 Fix: Use separate counter
+          _emptyResponseRetries++;
+          logger.d('🔱 [EmptyResponse] Empty response detected, retry $_emptyResponseRetries/2');
           _eventController.add({
             'type': 'status',
             'data': 'Retrying... (empty response)',
@@ -561,7 +795,7 @@ class AetherCore {
                 'tool_name': call['name'],
                 'params': call['params'],
                 'tool_id': toolId,
-                'is_read_only': _routerToolIsReadOnly(call['name'] as String? ?? 'tool'),
+                'is_read_only': safetyGuard.routerToolIsReadOnly(call['name'] as String? ?? 'tool'),
               });
             }
           }
@@ -593,9 +827,13 @@ class AetherCore {
         // Track the fingerprint of tool calls across turns. If the model calls
         // the exact same tool with same params 2 turns in a row, force-break.
         if (pendingRequests.isNotEmpty) {
-          final currentFingerprint = pendingRequests
+          // 🔱 Bug 5 Fix: Sort individual fingerprints before joining
+          // to prevent order-sensitivity from causing false positives
+          final fpList = pendingRequests
               .map((r) => '${r.name}::${r.params['path'] ?? r.params['command'] ?? r.params.toString()}')
-              .join('|');
+              .toList()
+            ..sort();
+          final currentFingerprint = fpList.join('|');
           if (currentFingerprint == _lastToolFingerprint) {
             _sameToolRepeatCount++;
             logger.w('🔱 [RepeatGuard] Same tool repeated $_sameToolRepeatCount times: $currentFingerprint');
@@ -621,7 +859,7 @@ class AetherCore {
           // 🔱 Smart Permission: Guardian (ask all) or Semi (auto-safe only)
           final needsConsensus = mode == ProtocolMode.guardian ||
               (mode == ProtocolMode.semi &&
-                  _hasDangerousRequests(pendingRequests));
+                  safetyGuard.hasDangerousRequests(pendingRequests));
 
           if (needsConsensus) {
             _eventController.add({
@@ -634,40 +872,28 @@ class AetherCore {
               pendingRequests,
             );
             if (!approved) {
-              _consecutiveDenials++;
-              logger.d('🔱 [DenialGuard] Denial count: $_consecutiveDenials');
-
-              // 🔱 MASSIVE UPGRADE: DENIAL HARD-STOP
-              // After a single denial, stop autonomous execution. The user explicitly
-              // rejected the action, so we shouldn't keep trying or asking.
-              if (_consecutiveDenials >= 1) {
-                _eventController.add({
-                  'type': 'error',
-                  'data': 'You denied this action. Stopping autonomous execution.',
-                });
-                _consecutiveDenials = 0;
-                protocol.reset();
-                break; // 🔱 HARD STOP — no more retries
-              }
+              // 🔱 Non-Blocking Consensus: Denial → Defer & Continue
+              // Don't hard-stop. Instead, skip this tool call and continue
+              // with the next step. The model will adapt.
+              _eventController.add({
+                'type': 'tool_deferred',
+                'data': 'Tool deferred. Continuing with other work...',
+                'tools': pendingRequests.map((r) => r.name).toList(),
+              });
 
               for (final req in pendingRequests) {
                 history.add(Message(
                   role: MessageRole.tool,
-                  content: 'User DENIED this tool execution. '
-                      'DO NOT retry this same command. '
-                      'Ask the user what they want instead. '
-                      'If you have already completed the task, say so and stop.',
+                  content: 'This tool execution was deferred (user did not respond in time). '
+                      'Skip this specific action and continue with the NEXT step of the task. '
+                      'Do NOT retry this same command.',
                   toolUseId: req.id,
                   isError: true,
                   metadata: {'tool_name': req.name},
                 ));
               }
-              _eventController.add({
-                'type': 'status',
-                'data': 'Rejected. Trying a different approach...',
-              });
               protocol.reset();
-              continue;
+              continue; // 🔱 Continue loop instead of hard stop
             }
             // Reset denial counter on approval
             _consecutiveDenials = 0;
@@ -737,7 +963,7 @@ class AetherCore {
             String content = res.content;
             if (res.isError) {
               content = '[TOOL_ERROR] ${res.content}\n'
-                  '${_getSpecificErrorGuidance(res.content)}';
+                  '${compactor.getSpecificErrorGuidance(res.content)}';
             }
 
             _eventController.add({
@@ -749,12 +975,12 @@ class AetherCore {
               'params': req?.params,
               'turn': turnCount,
               'duration': toolExecStopwatch.elapsedMilliseconds,
-              'is_read_only': _routerToolIsReadOnly(req?.name ?? 'tool'),
+              'is_read_only': safetyGuard.routerToolIsReadOnly(req?.name ?? 'tool'),
             });
 
             // 🔱 Bug #3 Fix: Store tool name in metadata so
             // local_inference_service can send correct toolName to flutter_gemma.
-            final isReadOnlyFlag = _routerToolIsReadOnly(req?.name ?? 'tool');
+            final isReadOnlyFlag = safetyGuard.routerToolIsReadOnly(req?.name ?? 'tool');
             final toolMsg = Message(
               role: MessageRole.tool,
               content: content,
@@ -856,14 +1082,16 @@ class AetherCore {
             }
 
             // Signal 2: Progress-Aware completion detection
-            // Build fingerprints for THIS turn's successful operations
+            // 🔱 Bug 1 Fix: Build fingerprints from REQUEST params, not output content
             final turnFingerprints = <String>{};
-            for (final r in results) {
+            for (int i = 0; i < results.length; i++) {
+              final r = results[i];
               if (!r.isError) {
-                // Use tool name + first 80 chars of content as fingerprint
-                final fp = r.content.length > 80
-                    ? r.content.substring(0, 80)
-                    : r.content;
+                // Use request params for progress tracking instead of output content
+                final req = i < pendingRequests.length ? pendingRequests[i] : null;
+                final fp = req != null
+                    ? '${req.name}::${req.params.toString()}'
+                    : r.content.substring(0, r.content.length.clamp(0, 80));
                 turnFingerprints.add(fp);
               }
             }
@@ -878,12 +1106,13 @@ class AetherCore {
               logger.d('🔱 [CompletionDetect] No new progress — spin count: $_noProgressTurnCount');
 
               if (_noProgressTurnCount >= 2) {
-                logger.d('🔱 [CompletionDetect] $_noProgressTurnCount turns with no progress — HARD STOP');
+                logger.d('🔱 [CompletionDetect] $_noProgressTurnCount turns with no progress — injecting review prompt');
                 history.add(Message(
                   role: MessageRole.system,
-                  content: '[TASK COMPLETED] You have been repeating the same operations. '
-                      'All tasks are DONE. Do NOT call any more tools. '
-                      'Summarize everything you accomplished for the user.',
+                  // 🔱 Bug 1 Fix: Softer prompt that lets model check if MORE work remains
+                  content: '[SYSTEM] You appear to be repeating similar operations. '
+                      'Check if ALL tasks from the user\'s original request are done. '
+                      'If YES, summarize and stop. If NO, continue with the NEXT pending task.',
                 ));
                 _noProgressTurnCount = 0;
               }
@@ -974,110 +1203,7 @@ class AetherCore {
     return '[RECOVERY SIGNAL] Protocol error: "$error". Fix tool tags and retry.';
   }
 
-  /// Strip audio bytes from all user messages after first model call.
-  /// Prevents re-sending ~156KB of audio on every tool loop iteration.
-  void _stripAudioFromHistory(List<Message> history) {
-    for (int i = 0; i < history.length; i++) {
-      final m = history[i];
-      if (m.audioBytes != null || m.audioPath != null) {
-        history[i] = m.copyWith(audioBytes: null, audioPath: null);
-      }
-    }
-  }
 
-  /// 🔱 Core Extraction: THINKING TOKEN HISTORY STRIP
-  /// ThinkingTokens from model reasoning get stored in assistant content
-  /// (via `<|channel>thought...<channel|>` blocks). These waste precious
-  /// context on the 32K window. Strip them from history messages.
-  void _stripThinkingFromHistory(List<Message> history) {
-    final thinkingPattern = RegExp(
-      r'<\|channel>thought[\s\S]*?<channel\|>',
-      dotAll: true,
-    );
-    for (int i = 0; i < history.length; i++) {
-      final m = history[i];
-      if (m.role == MessageRole.assistant &&
-          m.content.contains('<|channel>thought')) {
-        final stripped = m.content.replaceAll(thinkingPattern, '').trim();
-        if (stripped != m.content) {
-          history[i] = Message(
-            role: m.role,
-            content: stripped,
-            metadata: m.metadata,
-          );
-        }
-      }
-    }
-  }
-
-  void _microCompact(List<Message> history) {
-    for (int i = 0; i < history.length; i++) {
-      final m = history[i];
-      if (m.role == MessageRole.tool && m.content.length > 2000) {
-        // 🔱 Core Extraction: HEAD + TAIL pattern (not just HEAD)
-        // Optimal Context Retention: Keeps the first 500 chars (headers) and last 300 chars (errors).
-        // This gives the model both the beginning (command output header)
-        // and the end (exit status, final lines) for better reasoning.
-        final head = m.content.substring(0, 500);
-        final tail = m.content.substring(m.content.length - 300);
-        history[i] = Message(
-          role: m.role,
-          content:
-              '$head\n... [Truncated — ${m.content.length} chars total] ...\n$tail',
-          toolUseId: m.toolUseId,
-          isError: m.isError,
-          isCompacted: true,
-          metadata: m.metadata,
-        );
-      }
-    }
-  }
-
-  /// 🔱 Fix #7 + Supreme Fix 3: Pair-aware trim with dynamic thresholds.
-  /// LetsDo mode keeps more context (for tool-heavy loops).
-  /// JustTalk mode keeps less (faster inference).
-  void _trimHistory(List<Message> history) {
-    // 🔱 Supreme Fix 3: Dynamic thresholds per mode
-    final maxMessages = chatMode == ChatMode.letsDo ? 60 : 40;
-    final keepTail = chatMode == ChatMode.letsDo ? 40 : 20;
-    if (history.length <= maxMessages) return;
-
-    final systemPrompts = history
-        .where((m) => m.role == MessageRole.system)
-        .take(2)
-        .toList();
-
-    // Find safe cut point — never cut between tool call and result
-    int cutIndex = history.length - keepTail;
-
-    // Walk backward to find a safe boundary
-    while (cutIndex > 0 && cutIndex < history.length) {
-      final msg = history[cutIndex];
-      // If we're at a tool result, include the preceding assistant message too
-      if (msg.role == MessageRole.tool) {
-        cutIndex--;
-        continue;
-      }
-      // If we're at an assistant message that triggered tools,
-      // check if next message is a tool result
-      if (msg.role == MessageRole.assistant &&
-          cutIndex + 1 < history.length &&
-          history[cutIndex + 1].role == MessageRole.tool) {
-        cutIndex--;
-        continue;
-      }
-      break;
-    }
-
-    final tail = history.sublist(cutIndex);
-    history.clear();
-    history.addAll(systemPrompts);
-    for (final msg in tail) {
-      if (!systemPrompts.any((s) => s.uuid == msg.uuid)) {
-        history.add(msg);
-      }
-    }
-  }
 
   Future<void> simpleChat({
     required String userMessage,
@@ -1096,14 +1222,14 @@ class AetherCore {
     _eventController.add({'type': 'status', 'data': 'Thinking...'});
 
     // 🔱 Core Extraction: SimpleChat gets SAME hardening as LetsDo
-    _microCompact(history);
-    await _autoCompactIfNeeded(history, callModel);
-    _trimHistory(history);
+    compactor.microCompact(history);
+    await compactor.autoCompactIfNeeded(history, callModel, chatMode, sessionId: sessionId, eventController: _eventController);
+    compactor.trimHistory(history, chatMode);
 
     // 🔱 Core Extraction: THINKING TOKEN STRIP
     // ThinkingTokens in history waste context space. Strip them
     // before sending to model — they're internal reasoning, not conversation.
-    _stripThinkingFromHistory(history);
+    compactor.stripThinkingFromHistory(history);
 
     int retryCount = 0;
     while (retryCount < maxRetries) {
@@ -1323,118 +1449,6 @@ class AetherCore {
     return intersection / union;
   }
 
-  /// 🔱 Supreme Fix 2: Compact stale system messages.
-  /// After multiple turns, the history accumulates [SYSTEM] nudges,
-  /// [RECOVERY SIGNAL] prompts, and empty-response re-prompts that
-  /// waste the context window. Collapse old ones (>3 turns ago).
-  /// IMPORTANT: Preserves [TASK COMPLETED] and [WORKSPACE] directives
-  /// which are critical for completion detection and workspace awareness.
-  void _compactSystemMessages(List<Message> history, int currentTurn) {
-    if (history.length < 10) return; // Too few to compact
-
-    // Count ONLY compactable system messages (not critical directives)
-    final systemIndices = <int>[];
-    for (int i = 2; i < history.length; i++) {
-      final m = history[i];
-      if (m.role == MessageRole.system &&
-          (m.content.contains('[SYSTEM]') ||
-           m.content.contains('[RECOVERY SIGNAL]')) &&
-          // 🔱 PROTECT critical directives from compaction
-          !m.content.contains('[TASK COMPLETED]') &&
-          !m.content.contains('[WORKSPACE]')) {
-        systemIndices.add(i);
-      }
-    }
-
-    // Keep only the last 2 system nudges — remove the rest
-    if (systemIndices.length > 2) {
-      final toRemove = systemIndices.sublist(0, systemIndices.length - 2);
-      // Remove in reverse order to preserve indices
-      for (final idx in toRemove.reversed) {
-        if (idx < history.length) {
-          history.removeAt(idx);
-        }
-      }
-      logger.d('🔱 [Compact] Removed ${toRemove.length} stale system messages');
-    }
-  }
-
-  /// 🔱 Supreme Fix 5: Parse error type and return SPECIFIC guidance.
-  /// A 2B model needs precise instructions, not generic "check file paths."
-  String _getSpecificErrorGuidance(String errorContent) {
-    final lower = errorContent.toLowerCase();
-
-    if (lower.contains('no such file') || lower.contains('not found')) {
-      return 'The file or directory does not exist. '
-          'Use `ls` to see what files are available, then retry with the correct path.';
-    }
-    if (lower.contains('permission denied')) {
-      return 'Permission denied — the path may be outside the sandbox. '
-          'Use only relative paths within the current working directory.';
-    }
-    if (lower.contains('command not found')) {
-      return 'That command is not available. '
-          'Use only basic shell commands: mkdir, echo, cat, ls, touch, cp, mv, rm, head, tail, wc, sort, grep, find.';
-    }
-    if (lower.contains('file exists') || lower.contains('already exists')) {
-      return 'The file already exists. '
-          'If you need to overwrite it, use file_write with force=true. '
-          'If the file was already written successfully in a previous turn, '
-          'DO NOT write it again — just summarize what you did and stop.';
-    }
-    if (lower.contains('is a directory')) {
-      return 'You tried to use a directory as a file. '
-          'Use `ls` to list its contents, or specify a file inside it.';
-    }
-    if (lower.contains('syntax error') || lower.contains('unexpected token')) {
-      return 'Shell syntax error. Check for unmatched quotes, '
-          'missing semicolons, or incorrect escaping. Simplify the command.';
-    }
-    if (lower.contains('timeout') || lower.contains('killed')) {
-      return 'The command took too long and was stopped. '
-          'Try a simpler or faster approach.';
-    }
-    // Default guidance (still better than the old generic one)
-    return 'Fix the error and retry with corrected parameters. '
-        'Try using `ls` to explore available files before retrying.';
-  }
-
-  /// 🔱 KHARWAL ORIGINAL: Adaptive Turn Depth Calculator
-  /// On-device 2B models drain battery and time with each inference turn.
-  /// Cloud agents can afford 50+ turns, but we need to be SMART about depth.
-  ///
-  /// Complexity heuristic based on user's message:
-  ///   - Simple (ls, show, read, explain) → 8 turns max
-  ///   - Medium (create, write, build) → 15 turns max
-  ///   - Complex (project, app, setup, multiple files) → 25 turns max
-  int _calcAdaptiveTurnDepth(List<Message> history) {
-    final lastUserMsg = history.lastWhere(
-      (m) => m.role == MessageRole.user,
-      orElse: () => Message(role: MessageRole.user, content: ''),
-    ).content.toLowerCase();
-
-    // Complex: multi-step task indicators
-    const complexKeywords = [
-      'project', 'app', 'setup', 'install', 'configure', 'build',
-      'website', 'server', 'database', 'multiple', 'full', 'complete',
-      'step by step', 'everything', 'entire',
-    ];
-
-    // Simple: single-action indicators
-    const simpleKeywords = [
-      'show', 'read', 'display', 'what is', 'explain', 'list',
-      'print', 'check', 'status', 'help', 'who', 'when', 'where',
-    ];
-
-    for (final kw in complexKeywords) {
-      if (lastUserMsg.contains(kw)) return 25;
-    }
-    for (final kw in simpleKeywords) {
-      if (lastUserMsg.contains(kw)) return 8;
-    }
-    return 15; // Default: medium complexity
-  }
-
   /// 🔱 KHARWAL ORIGINAL: Sandbox Awareness Injection
   /// 2B models "forget" what files exist between tool turns. A 200B cloud
   /// model remembers tool outputs perfectly, but our tiny model loses track.
@@ -1447,7 +1461,8 @@ class AetherCore {
       // Quick ls of sandbox root — lightweight, no recursion
       final lsResult = await Process.run(
         'ls', ['-la'],
-        workingDirectory: null, // Uses app sandbox
+        workingDirectory: router.validator.sandboxRoot, // Uses actual sandbox root path
+        environment: ProcessUtils.getCleanEnvironment(),
       );
       final output = (lsResult.stdout as String? ?? '').trim();
       if (output.isNotEmpty && output.length < 2000) {
@@ -1467,271 +1482,16 @@ class AetherCore {
     }
   }
 
-  /// 🔱 Core Extraction: AUTO-COMPACT / AI SUMMARIZATION
-  /// 🔱 Infinite Memory Architecture: when context grows too large,
-  /// use the model itself to summarize old context. This keeps the 32K
-  /// context window lean while preserving all critical information.
-  ///
-  /// Flow:
-  ///   1. Estimate tokens in history
-  ///   2. If above threshold → split into "aging" + "fresh"
-  ///   3. Ask model to summarize "aging" into 4-5 bullet points
-  ///   4. Replace history: [SystemPrompts] + [Summary] + [Fresh]
-  ///   5. Agent continues with full context awareness
-  ///
-  /// Circuit breaker: Max 3 consecutive auto-compact failures → stop trying.
-  int _autoCompactFailures = 0;
-  static const int _maxAutoCompactFailures = 3;
-
-  Future<void> _autoCompactIfNeeded(
-    List<Message> history,
-    Future<Stream<InferenceEvent>> Function(List<Message> history) callModel,
-  ) async {
-    // Don't compact if history is small enough
-    if (history.length < 30) return;
-
-    // Circuit breaker: stop after repeated failures
-    if (_autoCompactFailures >= _maxAutoCompactFailures) return;
-
-    // Estimate tokens (rough: 1 token ≈ 4 chars for English)
-    final estimatedTokens = _estimateTokens(history);
-    // E2B model supports 32K context natively, BUT for safe on-device GPU inference, 
-    // the KV cache is capped at 8192 tokens (in local_inference_service.dart).
-    // So we must compact when we reach ~6000 estimated tokens.
-    if (estimatedTokens < 6000) return;
-
-    logger.d('🔱 [AutoCompact] Triggered: ~$estimatedTokens tokens, ${history.length} messages');
-
-    try {
-      // 1. Preserve system prompts (first 2 messages)
-      final systemPrompts = history
-          .where((m) => m.role == MessageRole.system)
-          .take(2)
-          .toList();
-
-      // 2. Split: aging (to summarize) + fresh (to keep verbatim)
-      // Keep the last 10 messages as "fresh" — they have active context
-      final freshCount = 10.clamp(0, history.length);
-      final agingMessages = history.sublist(0, history.length - freshCount);
-      final freshMessages = history.sublist(history.length - freshCount);
-
-      // 3. Build summary request — strip audio/images from aging to save tokens
-      final agingText = agingMessages
-          .where((m) => !systemPrompts.any((s) => s.uuid == m.uuid))
-          .map((m) {
-        final role = m.role.name.toUpperCase();
-        final content = m.content.length > 500
-            ? '${m.content.substring(0, 500)}...'
-            : m.content;
-        return '[$role]: $content';
-      }).join('\n');
-
-      if (agingText.trim().isEmpty) return;
-
-      // 4. Ask model to summarize (short inference, no tools)
-      final summaryPrompt = [
-        Message(
-          role: MessageRole.user,
-          content: 'Summarize this conversation in 4-5 bullet points. '
-              'Focus on: what was asked, what was done, errors fixed, files created, current task. '
-              'Keep file paths and specific technical details. Be concise.\n\n'
-              '$agingText',
-        ),
-      ];
-
-      String summary = '';
-      final summaryStream = await callModel(summaryPrompt);
-      await for (final event in summaryStream) {
-        if (event is TextToken) {
-          summary += event.token;
-        }
-      }
-
-      if (summary.trim().isEmpty) {
-        _autoCompactFailures++;
-        logger.w('🔱 [AutoCompact] Empty summary — failure $_autoCompactFailures/$_maxAutoCompactFailures');
-        return;
-      }
-
-      // 5. Rebuild history: [SystemPrompts] + [Summary] + [Continuation] + [Fresh]
-      history.clear();
-      history.addAll(systemPrompts);
-      history.add(Message(
-        role: MessageRole.system,
-        content: '[CONTEXT SUMMARY — Previous conversation summarized to save context]\n'
-            '$summary',
-        isCompacted: true,
-      ));
-      // 🔱 Context Continuation Prompt: Forces the 2B model to resume seamlessly.
-      // Prevents model from "recapping" or "acknowledging" the summary
-      history.add(Message(
-        role: MessageRole.system,
-        content: 'This session continues from a summarized conversation. '
-            'Resume directly — do not acknowledge the summary or recap. '
-            'Continue working on the current task.',
-      ));
-      history.addAll(freshMessages);
-
-      // Reset circuit breaker on success
-      _autoCompactFailures = 0;
-
-      final newTokens = _estimateTokens(history);
-      logger.d('🔱 [AutoCompact] ✅ Compacted: ~$estimatedTokens → ~$newTokens tokens '
-          '(${history.length} messages, saved ~${estimatedTokens - newTokens} tokens)');
-
-      _eventController.add({
-        'type': 'status',
-        'data': 'Context optimized for performance.',
-      });
-    } catch (e) {
-      _autoCompactFailures++;
-      logger.w('🔱 [AutoCompact] Failed ($_autoCompactFailures/$_maxAutoCompactFailures): $e');
-      // Non-fatal: if auto-compact fails, we just continue with full history.
-      // _trimHistory will catch it as a fallback.
-    }
-  }
-
   Future<bool> compactHistory(
     List<Message> history,
     Future<Stream<InferenceEvent>> Function(List<Message> history) callModel,
   ) async {
-    if (history.length < 5) {
-      logger.d('🔱 [ManualCompact] History too small (${history.length} messages) to compact.');
-      return false;
-    }
-    logger.d('🔱 [ManualCompact] Triggered manual compaction: ${history.length} messages');
-
-    // Save token count for telemetry logs
-    final beforeTokens = _estimateTokens(history);
-
-    // 1. Preserve system prompts (first 2 messages)
-    final systemPrompts = history
-        .where((m) => m.role == MessageRole.system)
-        .take(2)
-        .toList();
-
-    // 2. Split: aging (to summarize) + fresh (to keep verbatim)
-    // Keep the last 4 messages as "fresh" — they have active context
-    final freshCount = 4.clamp(0, history.length);
-    final agingMessages = history.sublist(0, history.length - freshCount);
-    final freshMessages = history.sublist(history.length - freshCount);
-
-    // 3. Build summary request
-    final agingText = agingMessages
-        .where((m) => !systemPrompts.any((s) => s.uuid == m.uuid))
-        .map((m) {
-      final role = m.role.name.toUpperCase();
-      final content = m.content.length > 500
-          ? '${m.content.substring(0, 500)}...'
-          : m.content;
-      return '[$role]: $content';
-    }).join('\n');
-
-    if (agingText.trim().isEmpty) return false;
-
-    // 4. Ask model to summarize (short inference, no tools)
-    final summaryPrompt = [
-      Message(
-        role: MessageRole.user,
-        content: 'Summarize this conversation in 4-5 bullet points. '
-            'Focus on: what was asked, what was done, errors fixed, files created, current task. '
-            'Keep file paths and specific technical details. Be concise.\n\n'
-            '$agingText',
-      ),
-    ];
-
-    String summary = '';
-    final summaryStream = await callModel(summaryPrompt);
-    await for (final event in summaryStream) {
-      if (event is TextToken) {
-        summary += event.token;
-      }
-    }
-
-    if (summary.trim().isEmpty) {
-      return false;
-    }
-
-    // 5. Rebuild history
-    history.clear();
-    history.addAll(systemPrompts);
-    history.add(Message(
-      role: MessageRole.system,
-      content: '[CONTEXT SUMMARY — Previous conversation summarized to save context]\n'
-          '$summary',
-      isCompacted: true,
-    ));
-    history.add(Message(
-      role: MessageRole.system,
-      content: 'This session continues from a summarized conversation. '
-          'Resume directly — do not acknowledge the summary or recap. '
-          'Continue working on the current task.',
-    ));
-    history.addAll(freshMessages);
-
-    final afterTokens = _estimateTokens(history);
-    logger.d('🔱 [ManualCompact] ✅ Compacted: ~$beforeTokens → ~$afterTokens tokens '
-        '(${history.length} messages, saved ~${beforeTokens - afterTokens} tokens)');
-
-    _eventController.add({
-      'type': 'status',
-      'data': 'Manual context compaction completed successfully.',
-    });
-    return true;
-  }
-
-  /// Rough token estimation: 1 token ≈ 4 chars for English/mixed content.
-  /// Includes message role overhead (~4 tokens per message).
-  int _estimateTokens(List<Message> history) {
-    int totalChars = 0;
-    for (final m in history) {
-      totalChars += m.content.length + 10; // 10 chars for role/formatting overhead
-    }
-    return totalChars ~/ 4;
-  }
-
-  /// 🔱 Lookup isReadOnly flag for a tool name from the router registry.
-  bool _routerToolIsReadOnly(String toolName) {
-    final toolDef = router.registeredTools.where((t) => t.name == toolName).firstOrNull;
-    return toolDef?.isReadOnly ?? true;
-  }
-
-  /// 🔱 MASSIVE UPGRADE: Smart danger assessment for Semi-Auto mode.
-  /// Instead of blanket-blocking all file_write operations,
-  /// assess the actual risk level. PathJailer already enforces sandbox,
-  /// so relative paths within the sandbox are safe to auto-approve.
-  bool _isRequestDangerous(ToolRequest req) {
-    if (req.name == 'file_read' || req.name == 'directory_briefing' ||
-        req.name == 'notification' || req.name == 'notification_agent') {
-      return false;
-    }
-    if (req.name == 'file_write') {
-      // 🔱 Smart: Relative paths within sandbox are safe (PathJailer protects)
-      final path = (req.params['path'] ?? '').toString();
-      // Only dangerous if: absolute path, contains .., or targets system dirs
-      return path.startsWith('/') || path.contains('..') || path.contains('~');
-    }
-    if (req.name == 'data_injector' || req.name == 'voice_munshi') {
-      return true;
-    }
-    if (req.name == 'bash') {
-      final cmd = (req.params['command'] ?? '').toString().trim();
-      final firstWord = cmd.split(' ').first.split('/').last;
-      const safeCommands = {
-        'mkdir', 'echo', 'cat', 'ls', 'pwd', 'tree', 'head', 'tail',
-        'wc', 'date', 'whoami', 'touch', 'cp', 'find', 'grep',
-      };
-      return !safeCommands.contains(firstWord);
-    }
-    return true;
-  }
-
-  /// 🔱 Check if any pending request needs approval in semi mode.
-  bool _hasDangerousRequests(List<ToolRequest> requests) {
-    for (final req in requests) {
-      if (_isRequestDangerous(req)) return true;
-    }
-    return false;
+    return compactor.compactHistory(
+      history,
+      callModel,
+      sessionId: sessionId,
+      eventController: _eventController,
+    );
   }
 
   void disposeInputAdapter(IInputAdapter adapter) {
@@ -1769,5 +1529,154 @@ class AetherCore {
       }
     }
     return sanitized;
+  }
+
+  Future<void> _handleSpeculationReview(
+    SpeculativeSandbox sandbox,
+    IInputAdapter inputAdapter,
+  ) async {
+    final relPaths = sandbox.writtenRelativePaths;
+    if (relPaths.isEmpty) {
+      print('\n${ChromeAura.engrave("🔱 Speculative execution completed. No files were modified.", ChromeAura.celestial)}');
+      await sandbox.dispose();
+      return;
+    }
+
+    print('\n${ChromeAura.engrave("╔═══════════════════════════════════════════════════════════════╗", ChromeAura.chrome)}');
+    print('${ChromeAura.engrave("║ 🔱 SPECULATIVE EXECUTION SUMMARY                              ║", ChromeAura.chrome)}');
+    print('${ChromeAura.engrave("╚═══════════════════════════════════════════════════════════════╝", ChromeAura.chrome)}');
+    print('The following files were modified speculatively:');
+    for (final relPath in relPaths) {
+      print('  • ${ChromeAura.paint(relPath, ChromeAura.trident)}');
+    }
+    print('');
+
+    // Let's print the diff for each file
+    for (final relPath in relPaths) {
+      final originalFilePath = p.join(sandbox.workspaceCwd, relPath);
+      final speculativeFilePath = p.join(sandbox.overlayDir.path, relPath);
+
+      final originalFile = File(originalFilePath);
+      final speculativeFile = File(speculativeFilePath);
+
+      List<String> oldLines = [];
+      if (await originalFile.exists()) {
+        oldLines = await originalFile.readAsLines();
+      }
+
+      List<String> newLines = [];
+      if (await speculativeFile.exists()) {
+        newLines = await speculativeFile.readAsLines();
+      }
+
+      print('${ChromeAura.engrave("╔" + "═" * 70, ChromeAura.chrome)}');
+      print('${ChromeAura.engrave("║ 🔱 SPECULATION DIFF: $relPath", ChromeAura.chrome)}');
+      print('${ChromeAura.engrave("╚" + "═" * 70, ChromeAura.chrome)}');
+      print('${ChromeAura.paint("--- a/$relPath", ChromeAura.wrath)}');
+      print('${ChromeAura.paint("+++ b/$relPath", ChromeAura.sanctum)}');
+
+      final diffLines = _generateDiff(oldLines, newLines);
+      _printDiffLines(diffLines);
+      print('');
+    }
+
+    // Now, prompt the user for action
+    print('${ChromeAura.engrave("🔱 Review the speculation diff above.", ChromeAura.celestial)}');
+    
+    final options = ['Commit changes to workspace', 'Discard changes'];
+    
+    String choice;
+    if (inputAdapter is CLIInputAdapter) {
+      choice = await inputAdapter.askQuestion(
+        '🔱 Would you like to commit or discard these speculative changes?',
+        options,
+      );
+    } else {
+      choice = options.first;
+    }
+
+    if (choice == 'Commit changes to workspace') {
+      await sandbox.commitChanges();
+      print('\n${ChromeAura.engrave("✔ [Commit] Speculative changes successfully committed to the workspace!", ChromeAura.sanctum)}\n');
+    } else {
+      await sandbox.dispose();
+      print('\n${ChromeAura.engrave("✘ [Discard] Speculative changes discarded cleanly.", ChromeAura.wrath)}\n');
+    }
+  }
+
+  List<String> _generateDiff(List<String> oldLines, List<String> newLines) {
+    int m = oldLines.length;
+    int n = newLines.length;
+    List<List<int>> dp = List.generate(m + 1, (_) => List.filled(n + 1, 0));
+
+    for (int i = 1; i <= m; i++) {
+      for (int j = 1; j <= n; j++) {
+        if (oldLines[i - 1] == newLines[j - 1]) {
+          dp[i][j] = dp[i - 1][j - 1] + 1;
+        } else {
+          dp[i][j] = dp[i - 1][j] > dp[i][j - 1] ? dp[i - 1][j] : dp[i][j - 1];
+        }
+      }
+    }
+
+    List<String> diffResult = [];
+    int i = m, j = n;
+    while (i > 0 || j > 0) {
+      if (i > 0 && j > 0 && oldLines[i - 1] == newLines[j - 1]) {
+        diffResult.add('  ${oldLines[i - 1]}');
+        i--;
+        j--;
+      } else if (j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+        diffResult.add('+ ${newLines[j - 1]}');
+        j--;
+      } else if (i > 0 && (j == 0 || dp[i][j - 1] < dp[i - 1][j])) {
+        diffResult.add('- ${oldLines[i - 1]}');
+        i--;
+      }
+    }
+    return diffResult.reversed.toList();
+  }
+
+  void _printDiffLines(List<String> diffLines) {
+    final contextSize = 3;
+    final changedIndices = <int>{};
+    for (int i = 0; i < diffLines.length; i++) {
+      if (diffLines[i].startsWith('+') || diffLines[i].startsWith('-')) {
+        changedIndices.add(i);
+      }
+    }
+
+    if (changedIndices.isEmpty) {
+      print('  • No changes detected.');
+      return;
+    }
+
+    final linesToShow = <int>{};
+    for (final idx in changedIndices) {
+      for (int c = -contextSize; c <= contextSize; c++) {
+        final target = idx + c;
+        if (target >= 0 && target < diffLines.length) {
+          linesToShow.add(target);
+        }
+      }
+    }
+
+    final sortedLines = linesToShow.toList()..sort();
+    
+    int? lastIdx;
+    for (final idx in sortedLines) {
+      if (lastIdx != null && idx > lastIdx + 1) {
+        print(ChromeAura.paint('  @@ ... @@', ChromeAura.mist));
+      }
+      final line = diffLines[idx];
+      if (line.startsWith('+')) {
+        print(ChromeAura.paint('  $line', ChromeAura.sanctum));
+      } else if (line.startsWith('-')) {
+        print(ChromeAura.paint('  $line', ChromeAura.wrath));
+      } else {
+        print(ChromeAura.paint('  $line', ChromeAura.mist));
+      }
+      lastIdx = idx;
+    }
   }
 }

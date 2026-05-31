@@ -1,4 +1,4 @@
-/// 🔱 HistoryCommand — Lists recently executed prompt strings and commands
+/// ⟨K⟩ HistoryCommand — Lists recently executed prompt strings and commands
 library;
 
 import '../apex_command.dart';
@@ -19,11 +19,11 @@ class HistoryCommand extends LocalCommand {
     try {
       final historyList = adapter.historyList as List<String>;
       if (historyList.isEmpty) {
-        return TextResult('🔱 Stdin history is currently empty.');
+        return TextResult('⟨K⟩ Stdin history is currently empty.');
       }
 
       final buffer = StringBuffer();
-      buffer.writeln('🔱 RECENT INPUT HISTORY:');
+      buffer.writeln('⟨K⟩ RECENT INPUT HISTORY:');
       for (var idx = 0; idx < historyList.length; idx++) {
         buffer.writeln('  [#${idx + 1}] ${historyList[idx]}');
       }

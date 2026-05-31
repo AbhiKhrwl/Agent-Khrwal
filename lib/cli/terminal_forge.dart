@@ -59,6 +59,29 @@ class TerminalForge {
   int _animTick = 0;
   ITerminalInputAdapter? adapter;
 
+  final List<String> pendingLogs = [];
+
+  void appendLog(String line) {
+    if (adapter?.mode == VimMode.question) {
+      pendingLogs.add(line);
+    } else {
+      if (_isThinking && logs.totalLines > 0) {
+        logs.insertLogBeforeLast(line, logWidth);
+      } else {
+        logs.appendLog(line, logWidth);
+      }
+      _redraw();
+    }
+  }
+
+  void flushPendingLogs() {
+    for (final line in pendingLogs) {
+      logs.appendLog(line, logWidth);
+    }
+    pendingLogs.clear();
+    _redraw();
+  }
+
   AetherCore? core;
   List<Message>? history;
   Future<Stream<InferenceEvent>> Function(List<Message> history)? callModel;
@@ -190,13 +213,13 @@ class TerminalForge {
   void _redraw() {
     _needsRedraw = false;
     final h = viewport.rows;
-    if (h < 14) return; // Keep rendering safe on very small terminal heights
+    if (h < 17) return; // Keep rendering safe on very small terminal heights (banner=12 + status=3 + prompt=1 + 1)
 
     final startTime = DateTime.now();
 
     screen.clear();
 
-    // 1. Draw header banner (Rows 0-8)
+    // 1. Draw header banner (Rows 0-11)
     _drawCrownBannerToBuffer();
 
     // 2. Draw status strip dashboard (Rows h-3 and h-2)
@@ -220,33 +243,61 @@ class TerminalForge {
     );
 
     if (isSplit) {
-      // 4. Draw scrollable viewport log content on the LEFT (Rows 9 to h-4)
-      final logBoxHeight = h - 12;
+      // 4. Draw scrollable viewport log content on the LEFT (Rows 12 to h-4)
+      final logBoxHeight = h - 15;
       if (logBoxHeight > 0) {
         final visibleLines = logs.getVisibleLines(logBoxHeight);
         for (var i = 0; i < visibleLines.length && i < logBoxHeight; i++) {
-          screen.write(0, 9 + i, visibleLines[i]);
+          screen.write(0, 12 + i, visibleLines[i]);
+        }
+
+        // 🔱 Scroll position indicators (only when user has scrolled up)
+        if (logs.userScrolledUp) {
+          final linesAbove = logs.scrollOffset;
+          final linesBelow = logs.totalLines - logs.scrollOffset - logBoxHeight;
+          if (linesAbove > 0) {
+            final hint = '${ChromeAura.celestial}↑ $linesAbove lines above${ChromeAura.reset}';
+            screen.write(2, 12, hint);
+          }
+          if (linesBelow > 0) {
+            final hint = '${ChromeAura.celestial}↓ $linesBelow lines below${ChromeAura.reset}';
+            screen.write(2, 12 + logBoxHeight - 1, hint);
+          }
         }
       }
 
       // 5. Draw partition line
-      for (var y = 9; y < h - 3; y++) {
+      for (var y = 12; y < h - 3; y++) {
         screen.write(w - 35, y, ChromeAura.vLine, _themeColor);
       }
 
       // 6. Draw telemetry sidebar on the RIGHT
-      final sidebarHeight = h - 12;
+      final sidebarHeight = h - 15;
       final sidebarLines = telemetry.renderSidebar(sidebarHeight, 34);
       for (var i = 0; i < sidebarLines.length && i < sidebarHeight; i++) {
-        screen.write(w - 34, 9 + i, sidebarLines[i]);
+        screen.write(w - 34, 12 + i, sidebarLines[i]);
       }
     } else {
       // Original vertical layout
-      final logBoxHeight = h - 12;
+      final logBoxHeight = h - 15;
       if (logBoxHeight > 0) {
         final visibleLines = logs.getVisibleLines(logBoxHeight);
         for (var i = 0; i < visibleLines.length && i < logBoxHeight; i++) {
-          screen.write(0, 9 + i, visibleLines[i]);
+          screen.write(0, 12 + i, visibleLines[i]);
+        }
+
+        // 🔱 Scroll position indicators (only when user has scrolled up)
+        if (logs.userScrolledUp) {
+          final linesAbove = logs.scrollOffset;
+          final linesBelow = logs.totalLines - logs.scrollOffset - logBoxHeight;
+          if (linesAbove > 0) {
+            final hint = '${ChromeAura.celestial}↑ $linesAbove lines above${ChromeAura.reset}';
+            screen.write(2, 12, hint);
+          }
+          if (linesBelow > 0) {
+            final hint = '${ChromeAura.celestial}↓ $linesBelow lines below${ChromeAura.reset}';
+            screen.write(2, 12 + logBoxHeight - 1, hint);
+          }
         }
       }
     }
@@ -255,22 +306,45 @@ class TerminalForge {
     if (adapter != null && adapter!.showSuggestions && adapter!.suggestions.isNotEmpty) {
       final suggestions = adapter!.suggestions;
       final selectedIdx = adapter!.selectedSuggestionIndex;
-      final boxHeight = suggestions.length + 2;
-      final startY = h - 2 - boxHeight; // Right above status strip
+
+      // Determine sliding window of suggestions (max 5 visible items)
+      final maxVisible = 5;
+      final count = suggestions.length;
+      int start = 0;
+      if (count > maxVisible) {
+        if (selectedIdx >= maxVisible) {
+          start = selectedIdx - (maxVisible ~/ 2);
+          if (selectedIdx >= count - 1) {
+            start = count - maxVisible;
+          }
+          start = start.clamp(0, count - maxVisible);
+        }
+      }
+
+      final visibleCount = count > maxVisible ? maxVisible : count;
+      final boxHeight = visibleCount + 2;
+
+      // Clamp startY so that it doesn't go below the Crown Banner if h is reasonably large, but always fits safely.
+      final startY = (h - 2 - boxHeight).clamp(12, h - 2 - boxHeight).clamp(0, h - 1);
 
       final startX = 4;
       final boxWidth = 35; // Standard width for suggestions dropdown
 
-      // Top Border
-      screen.write(startX, startY, '${ChromeAura.cornerTL}${ChromeAura.hLine * (boxWidth - 2)}${ChromeAura.cornerTR}', _themeColor);
+      // Top Border (with up indicator if more suggestions are above)
+      final hasAbove = start > 0;
+      final topBorderText = hasAbove
+          ? '${ChromeAura.cornerTL}${ChromeAura.hLine * ((boxWidth - 5) ~/ 2)} ▲ ${ChromeAura.hLine * ((boxWidth - 5) ~/ 2)}${ChromeAura.cornerTR}'
+          : '${ChromeAura.cornerTL}${ChromeAura.hLine * (boxWidth - 2)}${ChromeAura.cornerTR}';
+      screen.write(startX, startY, topBorderText, _themeColor);
 
-      for (int i = 0; i < suggestions.length; i++) {
-        final isSelected = i == selectedIdx;
+      for (int i = 0; i < visibleCount; i++) {
+        final actualIdx = start + i;
+        final isSelected = actualIdx == selectedIdx;
         final prefix = isSelected ? '▶ ' : '  ';
         final optionStyle = isSelected ? ChromeAura.oracle : ChromeAura.chrome;
         final bgStyle = isSelected ? ChromeAura.bgActive : '';
 
-        final optionText = '/${suggestions[i]}';
+        final optionText = '/${suggestions[actualIdx]}';
         final paddedText = optionText.padRight(boxWidth - 6);
 
         final line = '$bgStyle$prefix$optionStyle$paddedText\x1b[0m';
@@ -278,8 +352,12 @@ class TerminalForge {
         screen.write(startX, startY + i + 1, '${ChromeAura.vLine}$line${ChromeAura.vLine}', _themeColor);
       }
 
-      // Bottom Border
-      screen.write(startX, startY + boxHeight - 1, '${ChromeAura.cornerBL}${ChromeAura.hLine * (boxWidth - 2)}${ChromeAura.cornerBR}', _themeColor);
+      // Bottom Border (with down indicator if more suggestions are below)
+      final hasBelow = start + visibleCount < count;
+      final bottomBorderText = hasBelow
+          ? '${ChromeAura.cornerBL}${ChromeAura.hLine * ((boxWidth - 5) ~/ 2)} ▼ ${ChromeAura.hLine * ((boxWidth - 5) ~/ 2)}${ChromeAura.cornerBR}'
+          : '${ChromeAura.cornerBL}${ChromeAura.hLine * (boxWidth - 2)}${ChromeAura.cornerBR}';
+      screen.write(startX, startY + boxHeight - 1, bottomBorderText, _themeColor);
     }
 
     // Delta-flush modified cell arrays to terminal output
@@ -296,82 +374,115 @@ class TerminalForge {
     final w = viewport.innerWidth;
     final borderColor = _themeColor;
 
-    // Top border
-    screen.write(2, 0, '${ChromeAura.cornerTL}${ChromeAura.hLine * w}${ChromeAura.cornerTR}', borderColor);
+    // ═══ AETHER SUPREME BANNER LAYOUT ═══
+    // Two columns: LEFT = welcome + mascot + info, RIGHT = tips & news
+    // Total banner height: 11 rows (0-10)
+    //
+    //  ╔─── Agent Kharwal v1.0 ────────────────────────────────────╗
+    //  ║                              │ Tips for getting started    ║
+    //  ║        Welcome back!         │ /help to see commands ...   ║
+    //  ║                              │ ─────────────────────────── ║
+    //  ║       ▄▄████▄▄              │ What's new                  ║
+    //  ║     ▄██▀▀▀▀██▄             │ ⟨K⟩ Web tools now sandbox...  ║
+    //  ║     ██ ▗▄▖▗▄▖██            │ ⟨K⟩ Pixel art mascot added   ║
+    //  ║     ██ ▝█▘▝█▘██            │ ⟨K⟩ Premium UI overhaul      ║
+    //  ║   model · provider          │ /tools for full list         ║
+    //  ║   ~/sandbox/path            │                              ║
+    //  ╚───────────────────────────────────────────────────────────╝
 
-    // Brand title line with sweep shimmer animation
-    final brand = '🔱 AGENT KHARWAL';
-    final subtitle = 'Apex Lite • Headless Runtime';
-    final shimmerPos = _animTick % (brand.length + 4);
-    final shimmerBrand = StringBuffer();
-    for (int i = 0; i < brand.length; i++) {
-      final distance = (i - shimmerPos).abs();
-      if (distance == 0) {
-        shimmerBrand.write('${ChromeAura.bold}${ChromeAura.oracle}${brand[i]}${ChromeAura.reset}');
-      } else if (distance == 1) {
-        shimmerBrand.write('$borderColor${brand[i]}${ChromeAura.reset}');
-      } else {
-        shimmerBrand.write('${ChromeAura.mist}${brand[i]}${ChromeAura.reset}');
-      }
+    final rightColWidth = 34;
+    final leftColWidth = w - rightColWidth - 1; // -1 for divider
+
+    // Row 0: Top border with centered title
+    final title = ' Agent Kharwal v1.0 ';
+    final titleLen = title.length;
+    final borderLeft = (w - titleLen) ~/ 2;
+    final borderRight = w - titleLen - borderLeft;
+    screen.write(2, 0,
+        '${ChromeAura.heavyCornerTL}'
+        '${ChromeAura.heavyH * borderLeft}'
+        '${ChromeAura.mist}$title${ChromeAura.reset}'
+        '$borderColor${ChromeAura.heavyH * borderRight}'
+        '${ChromeAura.heavyCornerTR}',
+        borderColor);
+
+    // Helper to build a full row with left content, divider, right content
+    void bannerRow(int row, String leftContent, String rightContent) {
+      final leftVis = _visibleLength(leftContent);
+      final rightVis = _visibleLength(rightContent);
+      final leftPad = leftColWidth - leftVis;
+      final rightPad = rightColWidth - rightVis;
+      screen.write(2, row,
+          '${ChromeAura.heavyV}'
+          '$leftContent${' ' * leftPad.clamp(0, 200)}'
+          '${ChromeAura.mist}${ChromeAura.vLine}${ChromeAura.reset}'
+          '$rightContent${' ' * rightPad.clamp(0, 200)}'
+          '${ChromeAura.heavyV}',
+          borderColor);
     }
-    final padR = w - brand.length - subtitle.length - 2;
-    final brandStr = ' $shimmerBrand${' ' * padR.clamp(1, 200)}${ChromeAura.mist}$subtitle';
-    screen.write(2, 1, '${ChromeAura.vLine}$brandStr ${ChromeAura.vLine}', borderColor);
 
-    // Separator line
-    screen.write(2, 2, '${ChromeAura.teeLeft}${ChromeAura.hLine * w}${ChromeAura.teeRight}', borderColor);
+    // Row 1: Empty + "Tips for getting started" header
+    bannerRow(1,
+        '',
+        ' ${ChromeAura.bold}${ChromeAura.chrome}Tips for getting started${ChromeAura.reset}');
 
-    // Model details line
-    final modelLine = ' ${ChromeAura.mist}Engine:${ChromeAura.reset} '
-        '${ChromeAura.trident}$_activeModel${ChromeAura.reset}'
-        '  ${ChromeAura.mist}via${ChromeAura.reset} '
-        '${_providerAura()}$_activeProvider${ChromeAura.reset}';
-    final modelLinePad = w - _visibleLength(modelLine);
-    screen.write(2, 3, '${ChromeAura.vLine}$modelLine${' ' * modelLinePad.clamp(0, 200)}${ChromeAura.vLine}', borderColor);
+    // Row 2: "Welcome back!" + first tip
+    final shimmerWelcome = ChromeAura.shimmerText('Welcome back!', _animTick);
+    final welcomePad = (leftColWidth - 13) ~/ 2; // 13 = "Welcome back!".length
+    bannerRow(2,
+        '${' ' * welcomePad.clamp(1, 100)}$shimmerWelcome',
+        ' ${ChromeAura.mist}/help to see all commands${ChromeAura.reset}');
 
-    // Sandbox workspace path line
-    final sandLine = ' ${ChromeAura.mist}Sandbox:${ChromeAura.reset} '
-        '${ChromeAura.chrome}$_sandboxPath${ChromeAura.reset}';
-    final sandLinePad = w - _visibleLength(sandLine);
-    screen.write(2, 4, '${ChromeAura.vLine}$sandLine${' ' * sandLinePad.clamp(0, 200)}${ChromeAura.vLine}', borderColor);
+    // Row 3: Empty + separator
+    bannerRow(3,
+        '',
+        ' ${ChromeAura.mist}${ChromeAura.hLine * (rightColWidth - 2)}${ChromeAura.reset}');
 
-    // Separator line
-    screen.write(2, 5, '${ChromeAura.teeLeft}${ChromeAura.hLine * w}${ChromeAura.teeRight}', borderColor);
+    // Row 4-8: Logo lines + "What's new" section
+    final logo = ChromeAura.logoAscii;
+    final logoPad = (leftColWidth - 9) ~/ 2; // 9 = logo line width
+    final logoPrefix = ' ' * logoPad.clamp(1, 100);
 
-    // Tools categorization line
-    final groups = ToolChrome.groupByCategory(_toolNames);
-    final countsList = <String>[];
-    for (final cat in ToolCategory.values) {
-      final count = groups[cat]?.length ?? 0;
-      final icon = ToolChrome.categoryIcon(cat);
-      countsList.add('$icon$count');
-    }
-    final countsStr = ' ${countsList.join('  ')}';
-    final armedStr = '${_toolNames.length} tools armed ';
-    
-    final toolsRightColWidth = 18;
-    final leftPartWidth = w - toolsRightColWidth;
-    final countsVisibleLen = _visibleLength(countsStr);
-    final leftPad = leftPartWidth - countsVisibleLen - 1;
-    final leftText = countsStr + (' ' * leftPad.clamp(0, 200));
+    // Row 4: Logo line 0 + "What's new" header
+    bannerRow(4,
+        '$logoPrefix${ChromeAura.trident}${logo[0]}${ChromeAura.reset}',
+        ' ${ChromeAura.bold}${ChromeAura.chrome}What\'s new${ChromeAura.reset}');
 
-    final armedVisibleLen = _visibleLength(armedStr);
-    final rightPad = toolsRightColWidth - armedVisibleLen;
-    final rightText = (' ' * rightPad.clamp(0, 200)) + '${ChromeAura.whisper(armedStr)}';
+    // Row 5: Logo line 1 + news item 1
+    bannerRow(5,
+        '$logoPrefix${ChromeAura.trident}${logo[1]}${ChromeAura.reset}',
+        ' ${ChromeAura.mist}Web tools now sandbox-safe${ChromeAura.reset}');
 
-    final toolsLine = '$leftText${ChromeAura.mist}${ChromeAura.vLine}${ChromeAura.reset}$rightText';
-    screen.write(2, 6, '${ChromeAura.vLine}$toolsLine${ChromeAura.vLine}', borderColor);
+    // Row 6: Logo line 2 + news item 2
+    bannerRow(6,
+        '$logoPrefix${ChromeAura.trident}${logo[2]}${ChromeAura.reset}',
+        ' ${ChromeAura.mist}Pixel art mascot added${ChromeAura.reset}');
 
-    // Info / Command hint line
-    final hintLeft = ' ${ChromeAura.mist}/tools for full arsenal${ChromeAura.reset}';
-    final hintRight = '${ChromeAura.mist}/help for commands${ChromeAura.reset} ';
-    final hintVisibleLen = _visibleLength(hintLeft) + _visibleLength(hintRight);
-    final hintPad = w - hintVisibleLen;
-    final hintLine = '$hintLeft${' ' * hintPad.clamp(0, 200)}$hintRight';
-    screen.write(2, 7, '${ChromeAura.vLine}$hintLine${ChromeAura.vLine}', borderColor);
+    // Row 7: Logo line 3 + news item 3
+    bannerRow(7,
+        '$logoPrefix${ChromeAura.trident}${logo[3]}${ChromeAura.reset}',
+        ' ${ChromeAura.mist}Premium heavy-border UI${ChromeAura.reset}');
 
-    // Bottom border
-    screen.write(2, 8, '${ChromeAura.cornerBL}${ChromeAura.hLine * w}${ChromeAura.cornerBR}', borderColor);
+    // Row 8: Logo line 4 (+ remaining lines) + hint
+    // Merge remaining logo lines into one display row (lines 4-6 are the bottom half)
+    bannerRow(8,
+        '$logoPrefix${ChromeAura.trident}${logo[4]}${ChromeAura.reset}',
+        ' ${ChromeAura.mist}/tools for full arsenal${ChromeAura.reset}');
+
+    // Row 9: Model + Provider info
+    final modelStr = ' $_activeModel ${ChromeAura.dot} ${_activeProvider.toUpperCase()}';
+    final sandStr = ' $_sandboxPath';
+    bannerRow(9,
+        ' ${ChromeAura.mist}$modelStr${ChromeAura.reset}',
+        ' ${ChromeAura.mist}${_toolNames.length} tools armed${ChromeAura.reset}');
+
+    // Row 10: Sandbox path + empty
+    bannerRow(10,
+        ' ${ChromeAura.mist}$sandStr${ChromeAura.reset}',
+        '');
+
+    // Row 11: Bottom border
+    screen.write(2, 11, '${ChromeAura.heavyCornerBL}${ChromeAura.heavyH * w}${ChromeAura.heavyCornerBR}', borderColor);
   }
 
   void _drawStatusStripToBuffer(int h) {
@@ -484,7 +595,7 @@ class TerminalForge {
       }
     }
 
-    final promptPrefix = '  ${ChromeAura.trident}🔱${ChromeAura.reset}$modePrefix';
+    final promptPrefix = '  ${ChromeAura.trident}${ChromeAura.logoInline}${ChromeAura.reset}$modePrefix';
 
     if (adapter != null && adapter!.mode != VimMode.normal) {
       screen.write(0, h - 1, '$promptPrefix$textContent');
@@ -516,7 +627,7 @@ class TerminalForge {
       modePrefix = ' ${ChromeAura.modeBadge('QUESTION', ChromeAura.bgEmber)} ';
     }
 
-    final promptPrefix = '  🔱$modePrefix';
+    final promptPrefix = '  ${ChromeAura.logoInline}$modePrefix';
     final prefixLen = _visibleLength(promptPrefix);
 
     if (mode == VimMode.command) {
@@ -540,27 +651,31 @@ class TerminalForge {
     _inputTokens += promptTokens;
     _updateCost();
 
-    logs.appendLog('  ${ChromeAura.trident}🔱${ChromeAura.reset} ${ChromeAura.oracle}$text${ChromeAura.reset}', logWidth);
+    // 🔱 Auto-snap viewport to bottom when user sends a new message
+    final viewportHeight = (viewport.rows - 12).clamp(1, 9999);
+    logs.scrollToBottom(viewportHeight);
+
+    logs.appendLog('  ${ChromeAura.trident}${ChromeAura.logoInline}${ChromeAura.reset} ${ChromeAura.oracle}$text${ChromeAura.reset}', logWidth);
     _responseStart = DateTime.now();
     _startThinking();
     
     // Append the initial thinking log block!
-    logs.appendLog('  ${ChromeAura.celestial}🔱 Thinking...${ChromeAura.reset}', logWidth);
+    logs.appendLog('  ${ChromeAura.celestial}${ChromeAura.logoInline} Thinking...${ChromeAura.reset}', logWidth);
     _redraw();
   }
 
   void onTextChunk(String chunk) {
+    final wasThinking = _isThinking;
     _stopThinking();
     
-    if (_isThinking) {
-      _isThinking = false;
+    if (wasThinking) {
       final elapsedSecs = _thinkingStart != null
           ? DateTime.now().difference(_thinkingStart!).inMilliseconds / 1000.0
           : 0.0;
           
       if (_currentThoughtBuffer.isNotEmpty) {
         // Model actually thought! Lock in the completed thought line.
-        logs.updateLastLog('  ${ChromeAura.sanctum}🔱 Thought for ${elapsedSecs.toStringAsFixed(1)}s${ChromeAura.reset}', logWidth);
+        logs.updateLastLog('  ${ChromeAura.sanctum}${ChromeAura.logoInline} Thought for ${elapsedSecs.toStringAsFixed(1)}s${ChromeAura.reset}', logWidth);
         // Start a new response block
         _currentResponseBuffer = '';
         logs.appendLog('', logWidth);
@@ -591,7 +706,7 @@ class TerminalForge {
       _isThinking = true;
       _thinkingStart = DateTime.now();
       _currentThoughtBuffer = '';
-      logs.appendLog('  ${ChromeAura.celestial}🔱 Thinking...${ChromeAura.reset}', logWidth);
+      logs.appendLog('  ${ChromeAura.celestial}${ChromeAura.logoInline} Thinking...${ChromeAura.reset}', logWidth);
     }
     
     _currentThoughtBuffer += thought;
@@ -602,19 +717,19 @@ class TerminalForge {
   }
 
   void onToolStart(String toolName, Map<String, dynamic> params) {
+    final wasThinking = _isThinking;
     _stopThinking();
     heartbeat.relabel('Executing $toolName');
     heartbeat.start();
 
-    if (_isThinking) {
-      _isThinking = false;
+    if (wasThinking) {
       final elapsedSecs = _thinkingStart != null
           ? DateTime.now().difference(_thinkingStart!).inMilliseconds / 1000.0
           : 0.0;
           
       if (_currentThoughtBuffer.isNotEmpty) {
         // Thought occurred! Lock in the thought line.
-        logs.updateLastLog('  ${ChromeAura.sanctum}🔱 Thought for ${elapsedSecs.toStringAsFixed(1)}s${ChromeAura.reset}', logWidth);
+        logs.updateLastLog('  ${ChromeAura.sanctum}${ChromeAura.logoInline} Thought for ${elapsedSecs.toStringAsFixed(1)}s${ChromeAura.reset}', logWidth);
       } else {
         // No thought occurred. Remove the "Thinking..." block.
         logs.removeLastLog();
@@ -630,8 +745,8 @@ class TerminalForge {
     final paramStr = _formatParams(params);
     final borderColor = ToolChrome.categoryColor(ToolChrome.category(toolName));
     final buffer = StringBuffer();
-    buffer.writeln('  $borderColor${ChromeAura.cornerTL}${ChromeAura.hLine} ${ChromeAura.trident}$title${ChromeAura.reset} $borderColor${ChromeAura.hLine * (width - title.length - 4)}${ChromeAura.cornerTR}${ChromeAura.reset}');
-    buffer.write('  $borderColor${ChromeAura.vLine}${ChromeAura.reset} ${_commandDisplay(toolName, paramStr)}');
+    buffer.writeln('  $borderColor${ChromeAura.heavyCornerTL}${ChromeAura.heavyH} ${ChromeAura.trident}$title${ChromeAura.reset} $borderColor${ChromeAura.heavyH * (width - title.length - 4)}${ChromeAura.heavyCornerTR}${ChromeAura.reset}');
+    buffer.write('  $borderColor${ChromeAura.heavyV}${ChromeAura.reset} ${_commandDisplay(toolName, paramStr)}');
 
     logs.appendLog(buffer.toString(), logWidth);
     _needsRedraw = true;
@@ -661,14 +776,14 @@ class TerminalForge {
     final remaining = width - titleLen - timing.length - 8;
     final pad = remaining > 0 ? remaining : 2;
 
-    buffer.writeln('  $borderColor${ChromeAura.cornerTL}${ChromeAura.hLine} ${ChromeAura.trident}$title${ChromeAura.reset} $borderColor${ChromeAura.hLine * pad} $timingAura$timing $borderColor${ChromeAura.hLine}${ChromeAura.cornerTR}${ChromeAura.reset}');
-    buffer.writeln('  $borderColor${ChromeAura.vLine}${ChromeAura.reset} ${_commandDisplay(toolName, paramStr)}');
-    buffer.writeln('  $borderColor${ChromeAura.vLine}${ChromeAura.reset}');
+    buffer.writeln('  $borderColor${ChromeAura.heavyCornerTL}${ChromeAura.heavyH} ${ChromeAura.trident}$title${ChromeAura.reset} $borderColor${ChromeAura.heavyH * pad} $timingAura$timing $borderColor${ChromeAura.heavyH}${ChromeAura.heavyCornerTR}${ChromeAura.reset}');
+    buffer.writeln('  $borderColor${ChromeAura.heavyV}${ChromeAura.reset} ${_commandDisplay(toolName, paramStr)}');
+    buffer.writeln('  $borderColor${ChromeAura.heavyV}${ChromeAura.reset}');
     final resultLines = _truncateResult(result, width - 6);
     for (final line in resultLines) {
-      buffer.writeln('  $borderColor${ChromeAura.vLine}${ChromeAura.reset} $statusAura$statusGlyph${ChromeAura.reset} $line');
+      buffer.writeln('  $borderColor${ChromeAura.heavyV}${ChromeAura.reset} $statusAura$statusGlyph${ChromeAura.reset} $line');
     }
-    buffer.write('  $borderColor${ChromeAura.cornerBL}${ChromeAura.hLine * width}${ChromeAura.cornerBR}${ChromeAura.reset}');
+    buffer.write('  $borderColor${ChromeAura.heavyCornerBL}${ChromeAura.heavyH * width}${ChromeAura.heavyCornerBR}${ChromeAura.reset}');
 
     logs.updateLastLog(buffer.toString(), logWidth);
     _needsRedraw = true;
@@ -679,17 +794,35 @@ class TerminalForge {
     _needsRedraw = true;
   }
 
+  void onTaskQueued(String taskText, int position) {
+    logs.appendLog(
+      '  ${ChromeAura.phantom}📋 Queued (#$position):${ChromeAura.reset} ${ChromeAura.mist}$taskText${ChromeAura.reset}',
+      logWidth,
+    );
+    _needsRedraw = true;
+  }
+
+  void onTaskDequeued(String taskText, int remaining) {
+    logs.appendLog(
+      '  ${ChromeAura.sanctum}▶ Processing queued task:${ChromeAura.reset} ${ChromeAura.oracle}$taskText${ChromeAura.reset}'
+      '${remaining > 0 ? " ${ChromeAura.mist}($remaining remaining)${ChromeAura.reset}" : ""}',
+      logWidth,
+    );
+    _needsRedraw = true;
+  }
+
+
   void onFinalResponse(String response) {
+    final wasThinking = _isThinking;
     _stopThinking();
     
-    if (_isThinking) {
-      _isThinking = false;
+    if (wasThinking) {
       final elapsedSecs = _thinkingStart != null
           ? DateTime.now().difference(_thinkingStart!).inMilliseconds / 1000.0
           : 0.0;
           
       if (_currentThoughtBuffer.isNotEmpty) {
-        logs.updateLastLog('  ${ChromeAura.sanctum}🔱 Thought for ${elapsedSecs.toStringAsFixed(1)}s${ChromeAura.reset}', logWidth);
+        logs.updateLastLog('  ${ChromeAura.sanctum}${ChromeAura.logoInline} Thought for ${elapsedSecs.toStringAsFixed(1)}s${ChromeAura.reset}', logWidth);
         _currentResponseBuffer = '';
         logs.appendLog('', logWidth);
       } else {
@@ -704,10 +837,10 @@ class TerminalForge {
   }
 
   void onError(String error) {
+    final wasThinking = _isThinking;
     _stopThinking();
     
-    if (_isThinking) {
-      _isThinking = false;
+    if (wasThinking) {
       logs.removeLastLog();
     }
     
@@ -716,10 +849,10 @@ class TerminalForge {
   }
 
   void onFatalError(String error) {
+    final wasThinking = _isThinking;
     _stopThinking();
     
-    if (_isThinking) {
-      _isThinking = false;
+    if (wasThinking) {
       logs.removeLastLog();
     }
     
@@ -732,8 +865,77 @@ class TerminalForge {
   }
 
   void onFailover(String from, String to) {
-    logs.appendLog('  ${ChromeAura.phantom}⟳ Failover:${ChromeAura.reset} ${ChromeAura.wrath}$from${ChromeAura.reset} ${ChromeAura.mist}→${ChromeAura.reset} ${ChromeAura.sanctum}$to${ChromeAura.reset}', logWidth);
+    appendLog('  ${ChromeAura.phantom}⟳ Failover:${ChromeAura.reset} ${ChromeAura.wrath}$from${ChromeAura.reset} ${ChromeAura.mist}→${ChromeAura.reset} ${ChromeAura.sanctum}$to${ChromeAura.reset}');
     _activeProvider = to;
+    _needsRedraw = true;
+  }
+
+  /// 🔱 Supreme Waterfall: Rich failover event with reason and cooldown
+  void onSmartFailover({
+    required String fromProvider,
+    required String fromModel,
+    required String toProvider,
+    required String toModel,
+    required String reason,
+    Duration? cooldown,
+  }) {
+    final fromAura = _providerAuraFor(fromProvider);
+    final toAura = _providerAuraFor(toProvider);
+    final cooldownStr = cooldown != null && cooldown.inSeconds > 0
+        ? ' ${ChromeAura.mist}(cooldown: ${cooldown.inSeconds}s)${ChromeAura.reset}'
+        : '';
+
+    final buffer = StringBuffer();
+    buffer.writeln('  ${ChromeAura.phantom}${ChromeAura.bold}╔══ WATERFALL FAILOVER ═══════════════════════════════════╗${ChromeAura.reset}');
+    buffer.writeln('  ${ChromeAura.phantom}║${ChromeAura.reset} ${ChromeAura.wrath}⚡ $reason${ChromeAura.reset}$cooldownStr');
+    buffer.writeln('  ${ChromeAura.phantom}║${ChromeAura.reset} $fromAura${fromProvider.toUpperCase()}${ChromeAura.reset} ${ChromeAura.mist}($fromModel)${ChromeAura.reset} ${ChromeAura.mist}→${ChromeAura.reset} $toAura${toProvider.toUpperCase()}${ChromeAura.reset} ${ChromeAura.mist}($toModel)${ChromeAura.reset}');
+    buffer.write('  ${ChromeAura.phantom}${ChromeAura.bold}╚═════════════════════════════════════════════════════════╝${ChromeAura.reset}');
+
+    appendLog(buffer.toString());
+
+    // Update active display to the new provider
+    _activeModel = toModel;
+    _activeProvider = toProvider;
+    _needsRedraw = true;
+  }
+
+  /// 🔱 Supreme Waterfall: All providers failed — show status dashboard
+  void onAllProvidersFailed(List<Map<String, String>> healthSummary) {
+    final wasThinking = _isThinking;
+    _stopThinking();
+
+    if (wasThinking) {
+      logs.removeLastLog();
+    }
+
+    final buffer = StringBuffer();
+    buffer.writeln('  ${ChromeAura.wrath}${ChromeAura.bold}╔══ ALL PROVIDERS EXHAUSTED ══════════════════════════════╗${ChromeAura.reset}');
+    buffer.writeln('  ${ChromeAura.wrath}║${ChromeAura.reset} ${ChromeAura.wrath}No available providers to handle this request.${ChromeAura.reset}');
+    buffer.writeln('  ${ChromeAura.wrath}║${ChromeAura.reset}');
+
+    for (final entry in healthSummary) {
+      final provider = entry['provider'] ?? '?';
+      final model = entry['model'] ?? '?';
+      final status = entry['status'] ?? '?';
+      final failures = entry['failures'] ?? '0';
+
+      String statusAura;
+      if (status.contains('HEALTHY')) {
+        statusAura = ChromeAura.sanctum;
+      } else if (status.contains('COOLDOWN')) {
+        statusAura = ChromeAura.celestial;
+      } else {
+        statusAura = ChromeAura.wrath;
+      }
+
+      buffer.writeln('  ${ChromeAura.wrath}║${ChromeAura.reset}  $statusAura$status${ChromeAura.reset} ${ChromeAura.chrome}$provider${ChromeAura.reset} ${ChromeAura.mist}($model) [${failures}x failed]${ChromeAura.reset}');
+    }
+
+    buffer.writeln('  ${ChromeAura.wrath}║${ChromeAura.reset}');
+    buffer.writeln('  ${ChromeAura.wrath}║${ChromeAura.reset} ${ChromeAura.mist}Providers will auto-recover when cooldowns expire.${ChromeAura.reset}');
+    buffer.write('  ${ChromeAura.wrath}${ChromeAura.bold}╚═════════════════════════════════════════════════════════╝${ChromeAura.reset}');
+
+    logs.appendLog(buffer.toString(), logWidth);
     _needsRedraw = true;
   }
 
@@ -763,18 +965,27 @@ class TerminalForge {
     final colors = [ChromeAura.celestial, ChromeAura.trident, ChromeAura.oracle, ChromeAura.ember];
     final color = colors[(_animTick ~/ 3) % colors.length];
 
-    logs.updateLastLog('  $color🔱 Thinking ${elapsedSecs.toStringAsFixed(1)}s $glyph${ChromeAura.reset}', logWidth);
+    logs.updateLastLog('  $color${ChromeAura.logoInline} Thinking ${elapsedSecs.toStringAsFixed(1)}s $glyph${ChromeAura.reset}', logWidth);
     _needsRedraw = true;
   }
 
   String _providerAura() {
-    switch (_activeProvider.toUpperCase()) {
+    return _providerAuraFor(_activeProvider);
+  }
+
+  /// 🔱 Get ANSI color aura for any provider name
+  String _providerAuraFor(String provider) {
+    switch (provider.toUpperCase()) {
       case 'GEMINI':
         return ChromeAura.trident;
       case 'GROQ':
         return ChromeAura.phantom;
       case 'OLLAMA':
         return ChromeAura.sanctum;
+      case 'NVIDIA':
+        return ChromeAura.celestial;
+      case 'OPENROUTER':
+        return ChromeAura.ember;
       default:
         return ChromeAura.chrome;
     }
@@ -838,6 +1049,8 @@ class TerminalForge {
     heartbeat.stop();
     viewport.dispose();
     telemetry.dispose();
+    // Disable SGR mouse tracking before restoring terminal
+    stdout.write('\x1b[?1002l\x1b[?1006l');
     stdout.write('${ChromeAura.alternateScreenBufferOff}${ChromeAura.showCursor}');
   }
 }

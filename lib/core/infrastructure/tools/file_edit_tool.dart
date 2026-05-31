@@ -4,6 +4,7 @@ import 'package:path/path.dart' as p;
 import '../../domain/interfaces/i_tool.dart';
 import '../../domain/entities/tool_entities.dart';
 import '../security/path_jailer.dart';
+import '../services/atomic_write_engine.dart';
 
 /// Sandboxed surgical file editing with path jail enforcement.
 /// Matches a target old string and replaces it with a new string.
@@ -136,7 +137,7 @@ class FileEditTool implements ITool {
           ? content.replaceAll(oldString, newString)
           : content.replaceFirst(oldString, newString);
 
-      await file.writeAsString(updatedContent, flush: true);
+      await AtomicWriteEngine.writeAtomically(file, updatedContent);
 
       final backupMsg = backupId != null ? ' [Backup ID: $backupId]' : '';
 
@@ -175,7 +176,7 @@ class RollbackHelper {
       final dir = Directory(p.join(sandboxRoot, '.apex_rollback'));
       if (!dir.existsSync()) dir.createSync(recursive: true);
       final file = File(p.join(dir.path, 'index.json'));
-      file.writeAsStringSync(jsonEncode(index), flush: true);
+      AtomicWriteEngine.writeAtomicallySync(file, jsonEncode(index));
     } catch (_) {}
   }
 
@@ -189,7 +190,7 @@ class RollbackHelper {
       if (!backupDir.existsSync()) backupDir.createSync(recursive: true);
 
       final backupFile = File(p.join(backupDir.path, backupId));
-      await backupFile.writeAsString(content, flush: true);
+      await AtomicWriteEngine.writeAtomically(backupFile, content);
 
       index[backupId] = {
         'id': backupId,

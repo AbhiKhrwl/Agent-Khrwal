@@ -28,6 +28,7 @@ import 'package:apex_lite/core/infrastructure/tools/task_tools.dart';
 import 'package:apex_lite/core/infrastructure/tools/send_message_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/brief_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/plan_mode_tools.dart';
+import 'package:apex_lite/core/infrastructure/services/plan_mode_coordinator.dart';
 import 'package:apex_lite/core/infrastructure/tools/ask_user_question_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/mcp_tools.dart';
 import 'package:apex_lite/core/infrastructure/tools/worktree_tools.dart';
@@ -51,8 +52,41 @@ import 'package:apex_lite/cli/cli_input_adapter.dart';
 import 'package:apex_lite/cli/services/config_manager.dart';
 import 'package:apex_lite/cli/services/inference_bridges.dart';
 import 'package:apex_lite/cli/services/plugin_manager.dart';
+import 'package:apex_lite/cli/services/provider_health_registry.dart';
+import 'package:apex_lite/core/infrastructure/services/repl_bridge_coordinator.dart';
+import 'package:apex_lite/core/infrastructure/services/session_manager.dart';
+import 'package:apex_lite/core/infrastructure/services/apex_streaming_thought_scrubber.dart';
+import 'package:apex_lite/core/infrastructure/heartbeat/history_compactor.dart';
 
 void main(List<String> args) async {
+  // 🔱 Terminal Restore Guard on SIGINT (Ctrl-C) / SIGTERM
+  void restoreTerminal() {
+    try {
+      stdin.lineMode = true;
+      stdin.echoMode = true;
+      stdout.write('\x1b[?1002l\x1b[?1006l');
+      stdout.write('\x1b[?1049l\x1b[?25h'); // alternate screen off, show cursor
+    } catch (_) {}
+  }
+
+  if (Platform.isLinux || Platform.isMacOS) {
+    ProcessSignal.sigint.watch().listen((signal) {
+      restoreTerminal();
+      exit(0);
+    });
+    ProcessSignal.sigterm.watch().listen((signal) {
+      restoreTerminal();
+      exit(0);
+    });
+  } else {
+    try {
+      ProcessSignal.sigint.watch().listen((signal) {
+        restoreTerminal();
+        exit(0);
+      });
+    } catch (_) {}
+  }
+
   // 🔱 TerminalForge — Supreme CLI Rendering Engine
   final forge = TerminalForge();
 
@@ -153,234 +187,532 @@ void main(List<String> args) async {
     router.registerTool(McpToolAdapter(toolDef));
   }
 
-  // 🔱 Ignite the TerminalForge with full luxury rendering
-  final activeModel = activePool.isNotEmpty
-      ? activePool.first.model
-      : 'unknown';
-  final activeProvider = activePool.isNotEmpty
-      ? activePool.first.type
-      : 'local';
-  forge.ignite(
-    modelName: activeModel,
-    provider: activeProvider,
-    toolNames: router.registeredTools.map((t) => t.name).toList(),
-    sandboxPath: sandboxPath,
-  );
+  runZoned(() async {
+    // 🔱 Ignite the TerminalForge with full luxury rendering
+    final activeModel = activePool.isNotEmpty
+        ? activePool.first.model
+        : 'unknown';
+    final activeProvider = activePool.isNotEmpty
+        ? activePool.first.type
+        : 'local';
+    forge.ignite(
+      modelName: activeModel,
+      provider: activeProvider,
+      toolNames: router.registeredTools.map((t) => t.name).toList(),
+      sandboxPath: sandboxPath,
+    );
 
-  // Setup inference model with multi-provider failover
-  Future<Stream<InferenceEvent>> callModel(List<Message> history) async {
-    final redactedHistory = <Message>[];
-    final Set<String> foundLabels = {};
+    // 🔱 SUPREME WATERFALL FAILOVER SYSTEM
+    // Intelligent multi-provider failover with health tracking,
+    // per-provider error classification, and real-time UI updates.
+    final healthRegistry = ProviderHealthRegistry.instance;
 
-    for (final message in history) {
-      final threats = secretGuard.scan(message.content);
-      if (threats.isNotEmpty) {
-        for (final match in threats) {
-          foundLabels.add(match.label);
-        }
-        final redactedContent = secretGuard.redact(message.content);
-        redactedHistory.add(message.copyWith(content: redactedContent));
-      } else {
-        redactedHistory.add(message);
-      }
-    }
+    Future<Stream<InferenceEvent>> callModel(List<Message> history) async {
+      // Phase 1: Redact secrets from history
+      final redactedHistory = <Message>[];
+      final Set<String> foundLabels = {};
 
-    if (foundLabels.isNotEmpty) {
-      print('\n🔱 [CHOWKIDAR] Intercepted & Redacted Secrets: ${foundLabels.join(", ")}');
-    }
-
-    for (int i = 0; i < activePool.length; i++) {
-      final provider = activePool[i];
-      try {
-        if (provider.type == 'gemini') {
-          return await callDirectGeminiModel(
-            redactedHistory,
-            provider.apiKey,
-            provider.model,
-            tools: router.registeredTools,
-          );
-        } else if (provider.type == 'groq') {
-          return await callDirectGroqModel(
-            redactedHistory,
-            provider.apiKey,
-            provider.model,
-            tools: router.registeredTools,
-            onStatus: (status) => forge.onStatus(status),
-          );
-        } else if (provider.type == 'nvidia') {
-          return await callDirectNvidiaModel(
-            redactedHistory,
-            provider.apiKey,
-            provider.model,
-            tools: router.registeredTools,
-            onStatus: (status) => forge.onStatus(status),
-          );
-        } else if (provider.type == 'openrouter') {
-          return await callDirectOpenRouterModel(
-            redactedHistory,
-            provider.apiKey,
-            provider.model,
-            tools: router.registeredTools,
-            onStatus: (status) => forge.onStatus(status),
-          );
-        } else if (provider.type == 'ollama') {
-          return await callLocalOllamaModel(
-            redactedHistory,
-            provider.baseUrl,
-            provider.model,
-            tools: router.registeredTools,
-            apiKey: provider.apiKey,
-          );
-        }
-      } catch (e) {
-        if (i < activePool.length - 1) {
-          final nextProvider = activePool[i + 1];
-          forge.onFailover(
-            '${provider.type.toUpperCase()} (${provider.model})',
-            '${nextProvider.type.toUpperCase()} (${nextProvider.model})',
-          );
+      for (final message in history) {
+        final threats = secretGuard.scan(message.content);
+        if (threats.isNotEmpty) {
+          for (final match in threats) {
+            foundLabels.add(match.label);
+          }
+          final redactedContent = secretGuard.redact(message.content);
+          redactedHistory.add(message.copyWith(content: redactedContent));
         } else {
-          forge.onFatalError('All providers in the active pool failed: $e');
-          rethrow;
+          redactedHistory.add(message);
         }
       }
-    }
-    throw Exception('Active pool is empty or all providers failed.');
-  }
 
-  final adapter = CLIInputAdapter(forge, activePool);
-  // 🔱 Wire the Supreme Input Adapter to the TerminalForge rendering engine
-  forge.setInputAdapter(adapter);
+      if (foundLabels.isNotEmpty) {
+        print('\n⟨K⟩ [CHOWKIDAR] Intercepted & Redacted Secrets: ${foundLabels.join(", ")}');
+      }
 
-  // 🔱 Route AskUserQuestion tool through the interactive TUI selector
-  AskUserQuestionTool.customProvider = (question, options) =>
-      adapter.askQuestion(question, options);
+      final totalChars = redactedHistory.fold<int>(0, (sum, msg) => sum + msg.content.length);
+      final exceeds200k = (totalChars / 4) > 200000;
 
-  final history = <Message>[];
+      // Phase 2: Get health-sorted provider pool (healthy first, cooled-down skipped)
+      final sortedPool = healthRegistry.getAvailablePool<ProviderConfig>(
+        activePool,
+        (config) => config.type,
+      );
 
-  // Inject the KharwalBehavior system prompt (CLI-aware)
-  final systemPrompt = KharwalBehavior.build(
-    isAgentMode: true,
-    cwd: sandboxPath,
-    toolNames: router.registeredTools.map((t) => t.name).toList(),
-    isCli: true,
-    modelName: activeModel,
-  );
-  history.add(Message(role: MessageRole.system, content: systemPrompt));
+      if (sortedPool.isEmpty) {
+        forge.onAllProvidersFailed(healthRegistry.getHealthSummary());
+        throw Exception('All providers are exhausted or on cooldown.');
+      }
 
-  final core = AetherCore(
-    router: router,
-    protocol: protocol,
-    mode: ProtocolMode.semi,
-  );
+      // Phase 3: Waterfall through providers
+      String? lastError;
+      final hasHealthy = activePool.any((p) => healthRegistry.isAvailable(p.type) && !healthRegistry.getRecord(p.type).isPermanentlyDisabled);
 
-  // Force ChatMode to letsDo to enable autonomous agent execution loop
-  core.setChatMode(ChatMode.letsDo);
+      for (int i = 0; i < sortedPool.length; i++) {
+        final provider = sortedPool[i];
 
-  // 🔱 Dynamic Plugin and Hook Engine Initialization
-  final userHome = Platform.isWindows
-      ? Platform.environment['USERPROFILE']
-      : Platform.environment['HOME'];
-  final userPluginsPath = '$userHome/.apex_lite/plugins';
-  final builtInPluginsPath = './##plugin_duniya/examples';
+        // Skip providers that are on cooldown ONLY if we have healthy alternatives
+        if (hasHealthy && !healthRegistry.isAvailable(provider.type)) {
+          final record = healthRegistry.getRecord(provider.type);
+          print('⟨K⟩ [Waterfall] Skipping ${provider.type.toUpperCase()} — ${record.statusLabel}');
+          continue;
+        }
 
-  // Ensure directories exist
-  try {
-    Directory(userPluginsPath).createSync(recursive: true);
-    Directory(builtInPluginsPath).createSync(recursive: true);
-  } catch (_) {}
-
-  final pluginLoader = PluginLoader(
-    pluginsDirPath: userPluginsPath,
-    builtInDirPath: builtInPluginsPath,
-    context: {
-      'registry': adapter.registry,
-      'adapter': adapter,
-      'forge': forge,
-      'core': core,
-    },
-  );
-
-  // Wire hook manager and execute load
-  router.hooks = pluginLoader.hookManager;
-
-  // 🔱 ACTIVATE KEYBOARD RAW-MODE LISTENER BEFORE LOADING PLUGINS
-  // Without this, the TUI consent prompt blocks indefinitely as stdin key events are not listened to!
-  adapter.startListening();
-
-  await pluginLoader.loadPlugins();
-
-  forge.bindExecutionContext(
-    core: core,
-    history: history,
-    callModel: callModel,
-  );
-
-  // 🔱 Route all AetherCore events through TerminalForge
-  // State trackers for tool correlation
-  String? _lastToolName;
-  Map<String, dynamic>? _lastToolParams;
-
-  core.eventStream.listen((event) {
-    final type = event['type'];
-    final data = event['data'];
-
-    switch (type) {
-      case 'chunk':
-        forge.onTextChunk(data.toString());
-        break;
-
-      case 'thought':
-        forge.onThought(data.toString());
-        break;
-
-      case 'tool_start':
-        _lastToolName = event['tool_name']?.toString() ?? 'unknown';
-        final rawParams = event['params'];
-        _lastToolParams = rawParams is Map<String, dynamic>
-            ? rawParams
-            : {'raw': rawParams.toString()};
-        forge.onToolStart(_lastToolName!, _lastToolParams!);
-        break;
-
-      case 'tool_result':
-        final isError = event['is_error'] as bool? ?? false;
-        forge.onToolResult(
-          _lastToolName ?? 'unknown',
-          _lastToolParams ?? {},
-          data.toString(),
-          isError,
+        var targetModel = PlanModeCoordinator.instance.getRuntimeModel(
+          mainLoopModel: provider.model,
+          exceeds200kTokens: exceeds200k,
         );
-        break;
 
-      case 'status':
-        forge.onStatus(data.toString());
-        break;
+        // Provider-specific model escalations
+        if (targetModel != provider.model) {
+          if (provider.type == 'groq') {
+            targetModel = 'llama-3.3-70b-versatile';
+          } else if (provider.type == 'nvidia') {
+            targetModel = exceeds200k ? 'meta/llama-3.1-405b-instruct' : 'meta/llama-3.1-70b-instruct';
+          } else if (provider.type == 'openrouter') {
+            if (targetModel == 'gemini-2.5-flash') {
+              targetModel = 'google/gemini-2.5-flash';
+            }
+          } else if (provider.type == 'ollama') {
+            targetModel = provider.model;
+          }
+        }
 
-      case 'final':
-        forge.onFinalResponse(data.toString());
-        break;
+        final allowedToolNames = router.activeAllowedTools;
+        var activeToolsList = allowedToolNames == null
+            ? router.registeredTools
+            : router.registeredTools.where((t) => allowedToolNames.contains(t.name)).toList();
 
-      case 'error':
-        forge.onError(data.toString());
-        break;
+        // 🔱 Cognitive Optimization for Local Ollama & Custom Providers
+        // Small local models get heavily overwhelmed by 50+ tool schemas (46 tools + MCPs).
+        // This causes long prefill latencies, context window exhaustion, and reasoning failures.
+        // We restrict local/custom models to the essential developer tool suite (~10 core tools)
+        // when no specific allowed tools are requested.
+        if (allowedToolNames == null &&
+            (provider.type == 'ollama' ||
+             provider.type == 'custom' ||
+             provider.type.startsWith('custom'))) {
+          const essentialTools = {
+            'bash',
+            'file_read',
+            'file_write',
+            'file_edit',
+            'directory_briefing',
+            'glob',
+            'grep',
+            'ask_user_question',
+            'enter_plan_mode',
+            'exit_plan_mode',
+          };
+          activeToolsList = activeToolsList.where((t) => essentialTools.contains(t.name)).toList();
+        }
+
+        try {
+          Stream<InferenceEvent>? stream;
+
+          if (provider.type == 'gemini') {
+            stream = await callDirectGeminiModel(
+              redactedHistory,
+              provider.apiKey,
+              targetModel,
+              tools: activeToolsList,
+            );
+          } else if (provider.type == 'groq') {
+            stream = await callDirectGroqModel(
+              redactedHistory,
+              provider.apiKey,
+              targetModel,
+              tools: activeToolsList,
+              onStatus: (status) => forge.onStatus(status),
+            );
+          } else if (provider.type == 'nvidia') {
+            stream = await callDirectNvidiaModel(
+              redactedHistory,
+              provider.apiKey,
+              targetModel,
+              tools: activeToolsList,
+              onStatus: (status) => forge.onStatus(status),
+            );
+          } else if (provider.type == 'openrouter') {
+            stream = await callDirectOpenRouterModel(
+              redactedHistory,
+              provider.apiKey,
+              targetModel,
+              tools: activeToolsList,
+              onStatus: (status) => forge.onStatus(status),
+            );
+          } else if (provider.type == 'ollama') {
+            int retries = 0;
+            const int maxOllamaRetries = 3;
+            while (retries < maxOllamaRetries) {
+              try {
+                stream = await callLocalOllamaModel(
+                  redactedHistory,
+                  provider.baseUrl,
+                  targetModel,
+                  tools: activeToolsList,
+                  apiKey: provider.apiKey,
+                  think: allowedToolNames == null ? null : false,
+                );
+                break; // Succeeded!
+              } catch (e) {
+                final errStr = e.toString();
+                final isRunnerCrash = errStr.contains('model runner has unexpectedly stopped') || errStr.contains('HTTP 500');
+                final isNetworkFailure = errStr.contains('Connection refused') || errStr.contains('SocketException') || errStr.contains('Connection closed');
+                
+                if (isRunnerCrash || isNetworkFailure) {
+                  retries++;
+                  if (retries < maxOllamaRetries) {
+                    final delaySecs = retries * 4;
+                    print('\n⟨K⟩ [Ollama] Model runner stopped or loading. Retrying in ${delaySecs}s to allow auto-restart (attempt $retries/$maxOllamaRetries)...');
+                    await Future.delayed(Duration(seconds: delaySecs));
+                    continue;
+                  }
+                }
+                rethrow; // Rethrow if other error or retries exhausted
+              }
+            }
+          } else {
+            // 🔱 Generic OpenAI-Compatible Custom Provider Fallback
+            stream = await callGenericOpenAIModel(
+              redactedHistory,
+              provider.baseUrl,
+              provider.apiKey,
+              targetModel,
+              tools: activeToolsList,
+              onStatus: (status) => forge.onStatus(status),
+            );
+          }
+
+          if (stream != null) {
+            // 🔱 Delay success recording until actual tokens flow
+            forge.updateConfiguration(targetModel, provider.type);
+            final wrappedStream = _wrapStreamWithHealthTracking(
+              stream,
+              provider.type,
+              targetModel,
+              healthRegistry,
+            );
+            return wrappedStream;
+          }
+        } catch (e) {
+          // 🔱 FAILURE — classify error and record to health registry
+          final classification = ProviderHealthRegistry.classifyError(provider.type, e);
+          healthRegistry.recordFailure(
+            provider.type,
+            targetModel,
+            classification.type,
+            e.toString(),
+            cooldown: classification.cooldown,
+          );
+
+          if (classification.type == FailureType.contextOverflow) {
+            print('\n⟨K⟩ [Waterfall] Context window overflow detected! Triggering inline memory compaction...');
+            final compactor = AetherHistoryCompactor();
+            final dummyController = StreamController<Map<String, dynamic>>()..stream.listen((event) {
+              if (event['type'] == 'status') {
+                print('⟨K⟩ [Waterfall] Compaction: ${event['data']}');
+              }
+            });
+            
+            final compacted = await compactor.compactHistory(
+              history,
+              (tempHistory) => callModel(tempHistory),
+              eventController: dummyController,
+            );
+            
+            await dummyController.close();
+            
+            if (compacted) {
+              print('⟨K⟩ [Waterfall] Compaction completed successfully. Retrying request with compressed context...');
+              return await callModel(history);
+            }
+          }
+
+          lastError = e.toString();
+
+          // Find next available provider for failover UI
+          ProviderConfig? nextAvailable;
+          for (int j = i + 1; j < sortedPool.length; j++) {
+            if (healthRegistry.isAvailable(sortedPool[j].type)) {
+              nextAvailable = sortedPool[j];
+              break;
+            }
+          }
+
+          if (nextAvailable != null) {
+            // Show smart failover event in UI
+            final record = healthRegistry.getRecord(provider.type);
+            forge.onSmartFailover(
+              fromProvider: provider.type,
+              fromModel: targetModel,
+              toProvider: nextAvailable.type,
+              toModel: nextAvailable.model,
+              reason: classification.reason,
+              cooldown: record.remainingCooldown,
+            );
+          } else {
+            // This was the last available provider
+            print('⟨K⟩ [Waterfall] ${provider.type.toUpperCase()} failed: ${classification.reason}');
+          }
+        }
+      }
+
+      // Phase 4: ALL PROVIDERS FAILED — show detailed dashboard
+      forge.onAllProvidersFailed(healthRegistry.getHealthSummary());
+      throw Exception('Supreme Waterfall: All ${activePool.length} providers exhausted. Last error: $lastError');
     }
-  });
 
-  forge.printFirstPrompt();
+    // Initialize SessionManager with custom local base path
+    final sessionManager = SessionManager(customBasePath: '$sandboxPath/.apex_sessions');
+    await sessionManager.initialize();
+    final existingSessions = await sessionManager.listSessions();
+    if (existingSessions.isNotEmpty) {
+      existingSessions.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      await sessionManager.loadSession(existingSessions.first.id);
+    } else {
+      await sessionManager.createSession(title: 'CLI Session');
+    }
 
-  // Start the autonomous event loop
-  try {
-    await core.executePulse(
-      inputAdapter: adapter,
+    final adapter = CLIInputAdapter(forge, activePool, sessionManager: sessionManager);
+    // 🔱 Wire the Supreme Input Adapter to the TerminalForge rendering engine
+    forge.setInputAdapter(adapter);
+
+    // 🔱 Route AskUserQuestion tool through the interactive TUI selector
+    AskUserQuestionTool.customProvider = (question, options) =>
+        adapter.askQuestion(question, options);
+
+    final history = <Message>[];
+
+    // Filter tool list for local/custom models in system prompt too to avoid mismatch
+    var toolNamesList = router.registeredTools.map((t) => t.name).toList();
+    if (activeProvider == 'ollama' || activeProvider == 'custom' || activeProvider.startsWith('custom')) {
+      const essentialTools = {
+        'bash',
+        'file_read',
+        'file_write',
+        'file_edit',
+        'directory_briefing',
+        'glob',
+        'grep',
+        'ask_user_question',
+        'enter_plan_mode',
+        'exit_plan_mode',
+      };
+      toolNamesList = toolNamesList.where((t) => essentialTools.contains(t)).toList();
+    }
+
+    if (sessionManager.messages.isNotEmpty) {
+      history.addAll(sessionManager.messages);
+    } else {
+      // Inject the KharwalBehavior system prompt (CLI-aware)
+      final systemPrompt = KharwalBehavior.build(
+        isAgentMode: true,
+        cwd: sandboxPath,
+        toolNames: toolNamesList,
+        isCli: true,
+        modelName: activeModel,
+      );
+      history.add(Message(role: MessageRole.system, content: systemPrompt));
+      sessionManager.messages = history;
+      await sessionManager.saveCurrentSession();
+    }
+
+    final core = AetherCore(
+      router: router,
+      protocol: protocol,
+      mode: ProtocolMode.semi,
+    )..sessionId = sessionManager.currentSessionId;
+
+    // Recover plan from transcripts if session is resuming
+    if (core.sessionId != null) {
+      unawaited(PlanModeCoordinator.instance.recoverPlanFromTranscript(core.sessionId!));
+    }
+
+    // Force ChatMode to letsDo to enable autonomous agent execution loop
+    core.setChatMode(ChatMode.letsDo);
+
+    // 🔱 Dynamic Plugin and Hook Engine Initialization
+    final userHome = Platform.isWindows
+        ? Platform.environment['USERPROFILE']
+        : Platform.environment['HOME'];
+    final userPluginsPath = '$userHome/.apex_lite/plugins';
+    final builtInPluginsPath = './##plugin_duniya/examples';
+
+    // Ensure directories exist
+    try {
+      Directory(userPluginsPath).createSync(recursive: true);
+      Directory(builtInPluginsPath).createSync(recursive: true);
+    } catch (_) {}
+
+    final pluginLoader = PluginLoader(
+      pluginsDirPath: userPluginsPath,
+      builtInDirPath: builtInPluginsPath,
+      context: {
+        'registry': adapter.registry,
+        'adapter': adapter,
+        'forge': forge,
+        'core': core,
+      },
+    );
+
+    // Wire hook manager and execute load
+    router.hooks = pluginLoader.hookManager;
+
+    // 🔱 ACTIVATE KEYBOARD RAW-MODE LISTENER BEFORE LOADING PLUGINS
+    // Without this, the TUI consent prompt blocks indefinitely as stdin key events are not listened to!
+    adapter.startListening();
+
+    // 🔱 Initialize the Remote Session Sync Bridge (Sampark) in the background
+    final syncBridge = SessionSyncBridge(
+      baseUrl: 'https://api.apex-core.dev',
+      dir: sandboxPath,
+      machineName: Platform.localHostname,
+    );
+
+    unawaited(() async {
+      try {
+        final reg = await syncBridge.registerEnvironment();
+        final sessId = await syncBridge.createSession(reg.environmentId, 'Apex CLI Session');
+        core.logger.i('[Sampark] Remote Session Sync Bridge active! Registered ID: ${reg.environmentId}, Session: $sessId');
+
+        await syncBridge.startWorkPollLoop((workItem) {
+          if (workItem.toString().contains('ping')) {
+            core.logger.d('[Sampark] Received ping');
+          } else {
+            core.logger.i('[Sampark] Sync Bridge received remote control command: $workItem');
+          }
+        });
+      } catch (e) {
+        core.logger.e('[Sampark] Remote Sync Bridge connection failed: $e');
+      }
+    }());
+
+    await pluginLoader.loadPlugins();
+
+    forge.bindExecutionContext(
+      core: core,
       history: history,
       callModel: callModel,
     );
-  } finally {
-    // 🔱 Ensure terminal state and spawned subprocesses are cleanly shut down
-    await swarmManager.runSessionCleanup();
-    await McpRegistry.shutdown();
-    adapter.dispose();
-    forge.dispose();
+
+    // 🔱 Route all AetherCore events through TerminalForge
+    // State trackers for tool correlation
+    String? _lastToolName;
+    Map<String, dynamic>? _lastToolParams;
+
+    final chunkScrubber = ApexStreamingThoughtScrubber();
+    final thoughtScrubber = ApexStreamingThoughtScrubber();
+
+    core.eventStream.listen((event) {
+      final type = event['type'];
+      final data = event['data'];
+
+      switch (type) {
+        case 'chunk':
+          final scrubbed = chunkScrubber.feed(data.toString());
+          if (scrubbed.isNotEmpty) {
+            forge.onTextChunk(scrubbed);
+          }
+          break;
+
+        case 'thought':
+          final scrubbed = thoughtScrubber.feed(data.toString());
+          if (scrubbed.isNotEmpty) {
+            forge.onThought(scrubbed);
+          }
+          break;
+
+        case 'tool_start':
+          _lastToolName = event['tool_name']?.toString() ?? 'unknown';
+          final rawParams = event['params'];
+          _lastToolParams = rawParams is Map<String, dynamic>
+              ? rawParams
+              : {'raw': rawParams.toString()};
+          forge.onToolStart(_lastToolName!, _lastToolParams!);
+          break;
+
+        case 'tool_result':
+          final isError = event['is_error'] as bool? ?? false;
+          forge.onToolResult(
+            _lastToolName ?? 'unknown',
+            _lastToolParams ?? {},
+            data.toString(),
+            isError,
+          );
+          break;
+
+        case 'task_queued':
+          forge.onTaskQueued(data.toString(), event['position'] as int? ?? 0);
+          break;
+
+        case 'task_dequeued':
+          forge.onTaskDequeued(data.toString(), event['remaining'] as int? ?? 0);
+          break;
+
+        case 'status':
+          forge.onStatus(data.toString());
+          break;
+
+
+        case 'final':
+          final flushed = chunkScrubber.flush();
+          if (flushed.isNotEmpty) {
+            forge.onTextChunk(flushed);
+          }
+          forge.onFinalResponse(data.toString());
+          sessionManager.messages = history;
+          unawaited(sessionManager.saveCurrentSession());
+          chunkScrubber.reset();
+          thoughtScrubber.reset();
+          break;
+
+        case 'error':
+          forge.onError(data.toString());
+          break;
+      }
+    });
+
+    forge.printFirstPrompt();
+
+    // Start the autonomous event loop
+    try {
+      await core.executePulse(
+        inputAdapter: adapter,
+        history: history,
+        callModel: callModel,
+      );
+    } finally {
+      // Save session on exit
+      sessionManager.messages = history;
+      await sessionManager.saveCurrentSession();
+
+      // 🔱 Ensure terminal state and spawned subprocesses are cleanly shut down
+      syncBridge.stop();
+      await swarmManager.runSessionCleanup();
+      await McpRegistry.shutdown();
+      adapter.dispose();
+      forge.dispose();
+    }
+  }, zoneSpecification: ZoneSpecification(
+    print: (self, parent, zone, line) {
+      forge.appendLog(line);
+    },
+  ));
+}
+
+Stream<InferenceEvent> _wrapStreamWithHealthTracking(
+  Stream<InferenceEvent> source,
+  String providerType,
+  String model,
+  ProviderHealthRegistry registry,
+) async* {
+  bool recorded = false;
+  await for (final event in source) {
+    if (!recorded && (event is TextToken || event is ToolCallEvent)) {
+      registry.recordSuccess(providerType, model);
+      recorded = true;
+    }
+    yield event;
   }
 }
+

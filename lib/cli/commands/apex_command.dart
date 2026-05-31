@@ -1,4 +1,4 @@
-/// 🔱 ApexCommand Base & Result Schemas
+/// ⟨K⟩ ApexCommand Base & Result Schemas
 ///
 /// Defines the Command type classification, local execution results,
 /// and the base command interfaces for local, interactive, and prompt-driven commands.

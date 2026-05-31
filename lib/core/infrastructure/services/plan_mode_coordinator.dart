@@ -106,9 +106,12 @@ class PlanModeCoordinator {
     final pType = providerType?.toLowerCase() ?? 'gemini';
 
     // 🔱 2026 Active and Fallback Models per Provider
+    // Supports various user spelling typos/casing (e.g. invidia/nvidia, 11ama/llama)
     final List<String> nvidiaModels = [
       'nvidia/llama-3.1-nemotron-70b-instruct',
+      'invidia/llama-3.1-nemotron-70b-instruct',
       'nvidia/llama-3.1-nemotron-51b-instruct',
+      'invidia/llama-3.1-nemotron-51b-instruct',
       'deepseek-ai/deepseek-v4-pro',
       'deepseek-ai/deepseek-v4-flash',
       'qwen/qwen3-coder-480b-a35b-instruct',
@@ -122,6 +125,7 @@ class PlanModeCoordinator {
       'google/gemma-4-26b-a4b-it:free',
       'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
       'nvidia/nemotron-3-super-120b-a12b:free',
+      'invidia/nemotron-3-super-120b-a12b:free',
       'nvidia/nemotron-3-nano-30b-a3b:free',
       'google/gemma-4-31b-it:free',
       'deepseek/deepseek-v4-flash:free',
@@ -144,42 +148,51 @@ class PlanModeCoordinator {
 
     final List<String> groqModels = [
       'llama-3.3-70b-versatile',
+      'Llama-3.3-70b-versatile',
+      '11ama-3.3-70b-versatile',
       'openai/gpt-oss-120b',
       'qwen/qwen3-32b',
     ];
 
+    final List<String> rawCandidates = [];
+
     if (state.mode == PermissionMode.plan) {
       if (pType == 'nvidia') {
         if (exceeds200kTokens) {
-          return [
+          rawCandidates.addAll([
             'nvidia/llama-3.1-nemotron-70b-instruct',
             ...nvidiaModels.where((m) => m != 'nvidia/llama-3.1-nemotron-70b-instruct'),
-          ];
+          ]);
+        } else {
+          rawCandidates.addAll(nvidiaModels);
         }
-        return nvidiaModels;
       } else if (pType == 'openrouter') {
         if (exceeds200kTokens) {
-          return [
+          rawCandidates.addAll([
             'nvidia/nemotron-3-super-120b-a12b:free',
             ...openRouterModels.where((m) => m != 'nvidia/nemotron-3-super-120b-a12b:free'),
-          ];
+          ]);
+        } else {
+          rawCandidates.addAll(openRouterModels);
         }
-        return openRouterModels;
       } else if (pType == 'gemini') {
         if (exceeds200kTokens) {
-          return ['moonshotai/kimi-k2-instruct-0905', ...geminiModels];
+          rawCandidates.addAll(['moonshotai/kimi-k2-instruct-0905', ...geminiModels]);
+        } else {
+          rawCandidates.addAll(geminiModels);
         }
-        return geminiModels;
       } else if (pType == 'groq') {
-        return groqModels;
+        rawCandidates.addAll(groqModels);
       } else {
         // Ollama or custom: respect the user's main loop model strictly to avoid blind cloud failures
-        return [mainLoopModel];
+        rawCandidates.add(mainLoopModel);
       }
     } else {
       // In standard mode, start with the configured mainLoopModel,
       // and provide the provider-specific models as robust fallback candidates.
-      final List<String> fullList = [mainLoopModel];
+      if (mainLoopModel.trim().isNotEmpty) {
+        rawCandidates.add(mainLoopModel);
+      }
       List<String> providerList = [];
 
       if (pType == 'nvidia') {
@@ -193,12 +206,20 @@ class PlanModeCoordinator {
       }
 
       for (final model in providerList) {
-        if (!fullList.contains(model)) {
-          fullList.add(model);
-        }
+        rawCandidates.add(model);
       }
-      return fullList;
     }
+
+    // Sanitize candidates list: remove duplicates, trim strings, filter empty names.
+    final List<String> sanitizedCandidates = [];
+    for (final candidate in rawCandidates) {
+      final trimmed = candidate.trim();
+      if (trimmed.isNotEmpty && !sanitizedCandidates.contains(trimmed)) {
+        sanitizedCandidates.add(trimmed);
+      }
+    }
+
+    return sanitizedCandidates;
   }
 
   /// Resolves the optimal runtime model based on permission mode, token sizes, and provider type.

@@ -130,8 +130,8 @@ Future<Stream<InferenceEvent>> callDirectGroqModel(
             waitSeconds = double.tryParse(match.group(1)!) ?? 5.0;
           }
 
-          if (waitSeconds > 5.0) {
-            waitSeconds = 5.0;
+          if (waitSeconds > 30.0) {
+            waitSeconds = 30.0;
           }
 
           final statusMsg = '⏳ Rate limit hit. Retrying in ${waitSeconds.toStringAsFixed(1)}s...';

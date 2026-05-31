@@ -257,26 +257,11 @@ void main(List<String> args) async {
           continue;
         }
 
-        var targetModel = PlanModeCoordinator.instance.getRuntimeModel(
+        final modelsToTry = PlanModeCoordinator.instance.getRuntimeModelList(
           mainLoopModel: provider.model,
           exceeds200kTokens: exceeds200k,
           providerType: provider.type,
         );
-
-        // Provider-specific model escalations
-        if (targetModel != provider.model) {
-          if (provider.type == 'groq') {
-            targetModel = 'llama-3.3-70b-versatile';
-          } else if (provider.type == 'nvidia') {
-            targetModel = exceeds200k ? 'meta/llama-3.1-405b-instruct' : 'meta/llama-3.1-70b-instruct';
-          } else if (provider.type == 'openrouter') {
-            if (targetModel == 'gemini-2.5-flash') {
-              targetModel = 'google/gemini-2.5-flash';
-            }
-          } else if (provider.type == 'ollama') {
-            targetModel = provider.model;
-          }
-        }
 
         final allowedToolNames = router.activeAllowedTools;
         var activeToolsList = allowedToolNames == null
@@ -307,129 +292,151 @@ void main(List<String> args) async {
           activeToolsList = activeToolsList.where((t) => essentialTools.contains(t.name)).toList();
         }
 
-        try {
-          Stream<InferenceEvent>? stream;
+        FailureClassification? lastClassification;
+        String? providerError;
+        bool providerSuccess = false;
+        Stream<InferenceEvent>? stream;
+        String lastAttemptedModel = modelsToTry.isNotEmpty ? modelsToTry.first : provider.model;
 
-          if (provider.type == 'gemini') {
-            stream = await callDirectGeminiModel(
-              redactedHistory,
-              provider.apiKey,
-              targetModel,
-              tools: activeToolsList,
-            );
-          } else if (provider.type == 'groq') {
-            stream = await callDirectGroqModel(
-              redactedHistory,
-              provider.apiKey,
-              targetModel,
-              tools: activeToolsList,
-              onStatus: (status) => forge.onStatus(status),
-            );
-          } else if (provider.type == 'nvidia') {
-            stream = await callDirectNvidiaModel(
-              redactedHistory,
-              provider.apiKey,
-              targetModel,
-              tools: activeToolsList,
-              onStatus: (status) => forge.onStatus(status),
-            );
-          } else if (provider.type == 'openrouter') {
-            stream = await callDirectOpenRouterModel(
-              redactedHistory,
-              provider.apiKey,
-              targetModel,
-              tools: activeToolsList,
-              onStatus: (status) => forge.onStatus(status),
-            );
-          } else if (provider.type == 'ollama') {
-            int retries = 0;
-            const int maxOllamaRetries = 3;
-            while (retries < maxOllamaRetries) {
-              try {
-                stream = await callLocalOllamaModel(
-                  redactedHistory,
-                  provider.baseUrl,
-                  targetModel,
-                  tools: activeToolsList,
-                  apiKey: provider.apiKey,
-                  think: allowedToolNames == null ? null : false,
-                );
-                break; // Succeeded!
-              } catch (e) {
-                final errStr = e.toString();
-                final isRunnerCrash = errStr.contains('model runner has unexpectedly stopped') || errStr.contains('HTTP 500');
-                final isNetworkFailure = errStr.contains('Connection refused') || errStr.contains('SocketException') || errStr.contains('Connection closed');
-                
-                if (isRunnerCrash || isNetworkFailure) {
-                  retries++;
-                  if (retries < maxOllamaRetries) {
-                    final delaySecs = retries * 4;
-                    print('\n⟨K⟩ [Ollama] Model runner stopped or loading. Retrying in ${delaySecs}s to allow auto-restart (attempt $retries/$maxOllamaRetries)...');
-                    await Future.delayed(Duration(seconds: delaySecs));
-                    continue;
-                  }
-                }
-                rethrow; // Rethrow if other error or retries exhausted
-              }
+        for (final targetModel in modelsToTry) {
+          lastAttemptedModel = targetModel;
+          try {
+            if (modelsToTry.length > 1) {
+              print('⟨K⟩ [Waterfall] Attempting ${provider.type.toUpperCase()} with model: $targetModel');
             }
-          } else {
-            // 🔱 Generic OpenAI-Compatible Custom Provider Fallback
-            stream = await callGenericOpenAIModel(
-              redactedHistory,
-              provider.baseUrl,
-              provider.apiKey,
-              targetModel,
-              tools: activeToolsList,
-              onStatus: (status) => forge.onStatus(status),
-            );
-          }
 
-          if (stream != null) {
-            // 🔱 Delay success recording until actual tokens flow
-            forge.updateConfiguration(targetModel, provider.type);
-            final wrappedStream = _wrapStreamWithHealthTracking(
-              stream,
+            if (provider.type == 'gemini') {
+              stream = await callDirectGeminiModel(
+                redactedHistory,
+                provider.apiKey,
+                targetModel,
+                tools: activeToolsList,
+              );
+            } else if (provider.type == 'groq') {
+              stream = await callDirectGroqModel(
+                redactedHistory,
+                provider.apiKey,
+                targetModel,
+                tools: activeToolsList,
+                onStatus: (status) => forge.onStatus(status),
+              );
+            } else if (provider.type == 'nvidia') {
+              stream = await callDirectNvidiaModel(
+                redactedHistory,
+                provider.apiKey,
+                targetModel,
+                tools: activeToolsList,
+                onStatus: (status) => forge.onStatus(status),
+              );
+            } else if (provider.type == 'openrouter') {
+              stream = await callDirectOpenRouterModel(
+                redactedHistory,
+                provider.apiKey,
+                targetModel,
+                tools: activeToolsList,
+                onStatus: (status) => forge.onStatus(status),
+              );
+            } else if (provider.type == 'ollama') {
+              int retries = 0;
+              const int maxOllamaRetries = 3;
+              while (retries < maxOllamaRetries) {
+                try {
+                  stream = await callLocalOllamaModel(
+                    redactedHistory,
+                    provider.baseUrl,
+                    targetModel,
+                    tools: activeToolsList,
+                    apiKey: provider.apiKey,
+                    think: allowedToolNames == null ? null : false,
+                  );
+                  break; // Succeeded!
+                } catch (e) {
+                  final errStr = e.toString();
+                  final isRunnerCrash = errStr.contains('model runner has unexpectedly stopped') || errStr.contains('HTTP 500');
+                  final isNetworkFailure = errStr.contains('Connection refused') || errStr.contains('SocketException') || errStr.contains('Connection closed');
+                  
+                  if (isRunnerCrash || isNetworkFailure) {
+                    retries++;
+                    if (retries < maxOllamaRetries) {
+                      final delaySecs = retries * 4;
+                      print('\n⟨K⟩ [Ollama] Model runner stopped or loading. Retrying in ${delaySecs}s to allow auto-restart (attempt $retries/$maxOllamaRetries)...');
+                      await Future.delayed(Duration(seconds: delaySecs));
+                      continue;
+                    }
+                  }
+                  rethrow; // Rethrow if other error or retries exhausted
+                }
+              }
+            } else {
+              // 🔱 Generic OpenAI-Compatible Custom Provider Fallback
+              stream = await callGenericOpenAIModel(
+                redactedHistory,
+                provider.baseUrl,
+                provider.apiKey,
+                targetModel,
+                tools: activeToolsList,
+                onStatus: (status) => forge.onStatus(status),
+              );
+            }
+
+            if (stream != null) {
+              // 🔱 Delay success recording until actual tokens flow
+              forge.updateConfiguration(targetModel, provider.type);
+              final wrappedStream = _wrapStreamWithHealthTracking(
+                stream,
+                provider.type,
+                targetModel,
+                healthRegistry,
+              );
+              providerSuccess = true;
+              return wrappedStream;
+            }
+          } catch (e) {
+            print('⟨K⟩ [Waterfall] Model $targetModel failed on ${provider.type.toUpperCase()}: $e');
+            providerError = e.toString();
+            final classification = ProviderHealthRegistry.classifyError(provider.type, e);
+            lastClassification = classification;
+
+            healthRegistry.recordFailure(
               provider.type,
               targetModel,
-              healthRegistry,
+              classification.type,
+              e.toString(),
+              cooldown: classification.cooldown,
             );
-            return wrappedStream;
-          }
-        } catch (e) {
-          // 🔱 FAILURE — classify error and record to health registry
-          final classification = ProviderHealthRegistry.classifyError(provider.type, e);
-          healthRegistry.recordFailure(
-            provider.type,
-            targetModel,
-            classification.type,
-            e.toString(),
-            cooldown: classification.cooldown,
-          );
 
-          if (classification.type == FailureType.contextOverflow) {
-            print('\n⟨K⟩ [Waterfall] Context window overflow detected! Triggering inline memory compaction...');
-            final compactor = AetherHistoryCompactor();
-            final dummyController = StreamController<Map<String, dynamic>>()..stream.listen((event) {
-              if (event['type'] == 'status') {
-                print('⟨K⟩ [Waterfall] Compaction: ${event['data']}');
+            if (classification.type == FailureType.contextOverflow) {
+              print('\n⟨K⟩ [Waterfall] Context window overflow detected! Triggering inline memory compaction...');
+              final compactor = AetherHistoryCompactor();
+              final dummyController = StreamController<Map<String, dynamic>>()..stream.listen((event) {
+                if (event['type'] == 'status') {
+                  print('⟨K⟩ [Waterfall] Compaction: ${event['data']}');
+                }
+              });
+              
+              final compacted = await compactor.compactHistory(
+                history,
+                (tempHistory) => callModel(tempHistory),
+                eventController: dummyController,
+              );
+              
+              await dummyController.close();
+              
+              if (compacted) {
+                print('⟨K⟩ [Waterfall] Compaction completed successfully. Retrying request with compressed context...');
+                return await callModel(history);
               }
-            });
-            
-            final compacted = await compactor.compactHistory(
-              history,
-              (tempHistory) => callModel(tempHistory),
-              eventController: dummyController,
-            );
-            
-            await dummyController.close();
-            
-            if (compacted) {
-              print('⟨K⟩ [Waterfall] Compaction completed successfully. Retrying request with compressed context...');
-              return await callModel(history);
             }
-          }
 
-          lastError = e.toString();
+            // Continue to next fallback model in candidate list for this provider
+            continue;
+          }
+        }
+
+        // If we reached here, all candidate models for this provider have failed.
+        if (!providerSuccess) {
+          lastError = providerError ?? 'All fallback models failed.';
+          final classification = lastClassification ?? ProviderHealthRegistry.classifyError(provider.type, Exception(lastError));
 
           // Find next available provider for failover UI
           ProviderConfig? nextAvailable;
@@ -445,7 +452,7 @@ void main(List<String> args) async {
             final record = healthRegistry.getRecord(provider.type);
             forge.onSmartFailover(
               fromProvider: provider.type,
-              fromModel: targetModel,
+              fromModel: lastAttemptedModel,
               toProvider: nextAvailable.type,
               toModel: nextAvailable.model,
               reason: classification.reason,

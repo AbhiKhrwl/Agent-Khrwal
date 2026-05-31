@@ -97,42 +97,122 @@ class PlanModeCoordinator {
   // 1. Dynamic Model Selector (Auto-Escalation)
   // ==========================================
 
+  /// Resolves the ordered list of runtime models based on permission mode, token sizes, and provider type.
+  List<String> getRuntimeModelList({
+    required String mainLoopModel,
+    required bool exceeds200kTokens,
+    String? providerType,
+  }) {
+    final pType = providerType?.toLowerCase() ?? 'gemini';
+
+    // 🔱 2026 Active and Fallback Models per Provider
+    final List<String> nvidiaModels = [
+      'nvidia/llama-3.1-nemotron-70b-instruct',
+      'nvidia/llama-3.1-nemotron-51b-instruct',
+      'deepseek-ai/deepseek-v4-pro',
+      'deepseek-ai/deepseek-v4-flash',
+      'qwen/qwen3-coder-480b-a35b-instruct',
+      'qwen/qwen3.5-397b-a17b',
+      'qwen/qwen3.5-122b-a10b',
+      'qwen/qwen3-next-80b-a3b-instruct',
+      'google/gemma-4-31b-it',
+    ];
+
+    final List<String> openRouterModels = [
+      'google/gemma-4-26b-a4b-it:free',
+      'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+      'nvidia/nemotron-3-super-120b-a12b:free',
+      'nvidia/nemotron-3-nano-30b-a3b:free',
+      'google/gemma-4-31b-it:free',
+      'deepseek/deepseek-v4-flash:free',
+      'qwen/qwen3-coder:free',
+      'qwen/qwen3-next-80b-a3b-instruct:free',
+    ];
+
+    final List<String> geminiModels = [
+      'gemini-3.1-flash-lite',
+      'gemini-3-flash-preview',
+      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
+      'gemini-2.5-flash-image',
+      'gemini-2.5-flash-preview-tts',
+      'gemini-2.0-flash',
+      'gemini-2.0-flash-001',
+      'gemini-2.0-flash-lite',
+      'gemini-2.0-flash-lite-001',
+    ];
+
+    final List<String> groqModels = [
+      'llama-3.3-70b-versatile',
+      'openai/gpt-oss-120b',
+      'qwen/qwen3-32b',
+    ];
+
+    if (state.mode == PermissionMode.plan) {
+      if (pType == 'nvidia') {
+        if (exceeds200kTokens) {
+          return [
+            'nvidia/llama-3.1-nemotron-70b-instruct',
+            ...nvidiaModels.where((m) => m != 'nvidia/llama-3.1-nemotron-70b-instruct'),
+          ];
+        }
+        return nvidiaModels;
+      } else if (pType == 'openrouter') {
+        if (exceeds200kTokens) {
+          return [
+            'nvidia/nemotron-3-super-120b-a12b:free',
+            ...openRouterModels.where((m) => m != 'nvidia/nemotron-3-super-120b-a12b:free'),
+          ];
+        }
+        return openRouterModels;
+      } else if (pType == 'gemini') {
+        if (exceeds200kTokens) {
+          return ['moonshotai/kimi-k2-instruct-0905', ...geminiModels];
+        }
+        return geminiModels;
+      } else if (pType == 'groq') {
+        return groqModels;
+      } else {
+        // Ollama or custom: respect the user's main loop model strictly to avoid blind cloud failures
+        return [mainLoopModel];
+      }
+    } else {
+      // In standard mode, start with the configured mainLoopModel,
+      // and provide the provider-specific models as robust fallback candidates.
+      final List<String> fullList = [mainLoopModel];
+      List<String> providerList = [];
+
+      if (pType == 'nvidia') {
+        providerList = nvidiaModels;
+      } else if (pType == 'openrouter') {
+        providerList = openRouterModels;
+      } else if (pType == 'gemini') {
+        providerList = geminiModels;
+      } else if (pType == 'groq') {
+        providerList = groqModels;
+      }
+
+      for (final model in providerList) {
+        if (!fullList.contains(model)) {
+          fullList.add(model);
+        }
+      }
+      return fullList;
+    }
+  }
+
   /// Resolves the optimal runtime model based on permission mode, token sizes, and provider type.
   String getRuntimeModel({
     required String mainLoopModel,
     required bool exceeds200kTokens,
     String? providerType,
   }) {
-    if (state.mode == PermissionMode.plan) {
-      final pType = providerType?.toLowerCase() ?? 'gemini'; // Default to gemini for backward-compatibility with tests
-      
-      // 🔱 2026 SUPREME STATE-OF-THE-ART FREE-FIRST & HIGH-PARAMETER PLANNING POLICY:
-      // On-device Gemma-2B is strictly preserved for local execution, while the planning stage
-      // dynamically escalates to massive 32B/72B/70B parameters cloud reasoning models.
-      // We prioritize outstanding free-tier coding models like Qwen 2.5 Coder 32B and Qwen 72B!
-      if (pType == 'openrouter') {
-        // King of open-source coding & planning in 2026: Qwen 2.5 Coder 32B (100% Free!)
-        // If exceeds 200k, use Qwen 2.5 72B Free or Llama 3.1 70B Free!
-        if (exceeds200kTokens) {
-          return 'qwen/qwen-2.5-72b-instruct:free';
-        }
-        return 'qwen/qwen-2.5-coder-32b-instruct:free';
-      } else if (pType == 'gemini') {
-        if (exceeds200kTokens) {
-          return 'moonshotai/kimi-k2-instruct-0905'; // Escalated standard backup model
-        }
-        return 'gemini-2.5-flash'; // High capability reasoning model
-      } else if (pType == 'groq') {
-        return 'llama-3.3-70b-versatile'; // Ultimate 70B Groq reasoning model
-      } else if (pType == 'nvidia') {
-        // Highly optimized 70B/405B Nvidia planning models
-        return exceeds200kTokens ? 'meta/llama-3.1-405b-instruct' : 'meta/llama-3.3-70b-instruct';
-      } else {
-        // For local Ollama or Custom providers, respect active local/custom model to avoid errors
-        return mainLoopModel;
-      }
-    }
-    return mainLoopModel; // Revert to standard model for implementation
+    final list = getRuntimeModelList(
+      mainLoopModel: mainLoopModel,
+      exceeds200kTokens: exceeds200kTokens,
+      providerType: providerType,
+    );
+    return list.isNotEmpty ? list.first : mainLoopModel;
   }
 
   // ==========================================

@@ -114,7 +114,7 @@ void main() {
 
       coordinator.enterPlanMode('test_session');
       final modelPlan = coordinator.getRuntimeModel(mainLoopModel: 'lite', exceeds200kTokens: false);
-      expect(modelPlan, equals('gemini-2.5-flash')); // Escalates to reasoning model
+      expect(modelPlan, equals('gemini-3.1-flash-lite')); // Escalates to reasoning model
 
       final modelUltra = coordinator.getRuntimeModel(mainLoopModel: 'lite', exceeds200kTokens: true);
       expect(modelUltra, equals('moonshotai/kimi-k2-instruct-0905')); // High capacity model

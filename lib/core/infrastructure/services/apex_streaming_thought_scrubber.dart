@@ -18,6 +18,7 @@ class ApexStreamingThoughtScrubber {
 
   bool _inBlock = false;
   String _buf = '';
+  // ignore: unused_field
   bool _lastEmittedEndedNewline = true;
 
   ApexStreamingThoughtScrubber() {

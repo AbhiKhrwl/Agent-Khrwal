@@ -1,4 +1,4 @@
-/// ⟨K⟩ ModelsCommand — Interactive alternate-screen primary model selector
+/// ⟨K⟩ ModelsCommand — Premium double-bordered interactive alternate-screen primary model selector
 library;
 
 import 'dart:async';
@@ -57,12 +57,12 @@ class ModelsCommand extends InteractiveCommand {
     void drawLoadingScreen() {
       stdout.write(ChromeAura.clearScreen);
       stdout.write(ChromeAura.cursorHome);
-      stdout.writeln('${ChromeAura.chrome}┌${ChromeAura.hLine * (w - 2)}┐${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.bold} ⟨K⟩ FETCHING MODELS FOR [${pool.first.type.toUpperCase()}] ${' ' * (w - 27 - pool.first.type.length)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist} Pinging active primary provider API... ${' ' * (w - 42)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist} Please wait while we retrieve the list of active models... ${' ' * (w - 60)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}└${ChromeAura.hLine * (w - 2)}┘${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╔${ChromeAura.heavyH * (w - 2)}╗${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}║${ChromeAura.bold} ⟨K⟩ FETCHING MODELS FOR [${pool.first.type.toUpperCase()}] ${' ' * (w - 29 - pool.first.type.length)}${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╠${ChromeAura.heavyH * (w - 2)}╣${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}║${ChromeAura.mist} Pinging active primary provider API... ${' ' * (w - 42)}${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}║${ChromeAura.mist} Please wait while we retrieve the list of active models... ${' ' * (w - 62)}${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╚${ChromeAura.heavyH * (w - 2)}╝${ChromeAura.reset}');
     }
 
     drawLoadingScreen();
@@ -74,44 +74,58 @@ class ModelsCommand extends InteractiveCommand {
     final fetchFutures = [pool.first].map((provider) async {
       List<String> models = [];
       try {
-        if (provider.type == 'gemini') {
-          if (provider.apiKey.isNotEmpty) {
-            models = await fetchGeminiModels(provider.apiKey);
-          } else {
-            throw Exception('API Key is empty');
+        final cached = ConfigManager.getCachedModels(provider.type);
+        final isExpired = ConfigManager.isModelCacheExpired(provider.type);
+        if (cached != null && cached.isNotEmpty && !isExpired) {
+          models = cached;
+        } else {
+          if (provider.type == 'gemini') {
+            if (provider.apiKey.isNotEmpty) {
+              models = await fetchGeminiModels(provider.apiKey);
+            } else {
+              throw Exception('API Key is empty');
+            }
+          } else if (provider.type == 'groq') {
+            if (provider.apiKey.isNotEmpty) {
+              models = await fetchGroqModels(provider.apiKey);
+            } else {
+              throw Exception('API Key is empty');
+            }
+          } else if (provider.type == 'openrouter') {
+            models = await fetchOpenRouterModels();
+          } else if (provider.type == 'ollama') {
+            final baseUrl = provider.baseUrl.isNotEmpty ? provider.baseUrl : 'http://localhost:11434';
+            models = await fetchOllamaModels(baseUrl, apiKey: provider.apiKey);
+          } else if (provider.type == 'nvidia') {
+            if (provider.apiKey.isNotEmpty) {
+              models = await fetchNvidiaModels(provider.apiKey);
+            } else {
+              throw Exception('API Key is empty');
+            }
           }
-        } else if (provider.type == 'groq') {
-          if (provider.apiKey.isNotEmpty) {
-            models = await fetchGroqModels(provider.apiKey);
-          } else {
-            throw Exception('API Key is empty');
-          }
-        } else if (provider.type == 'openrouter') {
-          models = await fetchOpenRouterModels();
-        } else if (provider.type == 'ollama') {
-          final baseUrl = provider.baseUrl.isNotEmpty ? provider.baseUrl : 'http://localhost:11434';
-          models = await fetchOllamaModels(baseUrl, apiKey: provider.apiKey);
-        } else if (provider.type == 'nvidia') {
-          if (provider.apiKey.isNotEmpty) {
-            models = await fetchNvidiaModels(provider.apiKey);
-          } else {
-            throw Exception('API Key is empty');
+          if (models.isNotEmpty) {
+            ConfigManager.saveModelCache(provider.type, models);
           }
         }
       } catch (e) {
         errors[provider.type] = e.toString();
         // Fallback models if API calls fail
-        models = [provider.model];
-        if (provider.type == 'gemini') {
-          models.addAll(['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash-exp', 'gemini-2.5-flash', 'gemini-2.5-pro']);
-        } else if (provider.type == 'groq') {
-          models.addAll(['llama-3.3-70b-versatile', 'mixtral-8x7b-32768', 'gemma2-9b-it', 'llama-3.1-8b-instant']);
-        } else if (provider.type == 'openrouter') {
-          models.addAll(['~openai/gpt-latest', '~anthropic/sonnet-latest', 'google/gemini-2.5-flash']);
-        } else if (provider.type == 'ollama') {
-          models.addAll(['llama3', 'mistral', 'gemma2', 'phi3']);
-        } else if (provider.type == 'nvidia') {
-          models.addAll(['deepseek-ai/deepseek-v4-flash']);
+        final cached = ConfigManager.getCachedModels(provider.type);
+        if (cached != null && cached.isNotEmpty) {
+          models = cached;
+        } else {
+          models = [provider.model];
+          if (provider.type == 'gemini') {
+            models.addAll(['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash-exp', 'gemini-2.5-flash', 'gemini-2.5-pro']);
+          } else if (provider.type == 'groq') {
+            models.addAll(['llama-3.3-70b-versatile', 'mixtral-8x7b-32768', 'gemma2-9b-it', 'llama-3.1-8b-instant']);
+          } else if (provider.type == 'openrouter') {
+            models.addAll(['~openai/gpt-latest', '~anthropic/sonnet-latest', 'google/gemini-2.5-flash']);
+          } else if (provider.type == 'ollama') {
+            models.addAll(['llama3', 'mistral', 'gemma2', 'phi3']);
+          } else if (provider.type == 'nvidia') {
+            models.addAll(['deepseek-ai/deepseek-v4-flash']);
+          }
         }
         models = models.toSet().toList();
       }
@@ -200,9 +214,9 @@ class ModelsCommand extends InteractiveCommand {
       stdout.write(ChromeAura.clearScreen);
       stdout.write(ChromeAura.cursorHome);
 
-      stdout.writeln('${ChromeAura.chrome}┌${ChromeAura.hLine * (w - 2)}┐${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.bold} ⟨K⟩ SELECT ACTIVE LLM MODEL [${pool.first.type.toUpperCase()}] ${' ' * (w - 29 - pool.first.type.length)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╔${ChromeAura.heavyH * (w - 2)}╗${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}║${ChromeAura.bold} ⟨K⟩ SELECT ACTIVE LLM MODEL [${pool.first.type.toUpperCase()}] ${' ' * (w - 31 - pool.first.type.length)}${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╠${ChromeAura.heavyH * (w - 2)}╣${ChromeAura.reset}');
 
       // Dynamic search bar status
       final queryText = searchQuery.isEmpty ? 'Type to search...' : searchQuery;
@@ -212,7 +226,7 @@ class ModelsCommand extends InteractiveCommand {
           : '${ChromeAura.trident}${ChromeAura.bold}$queryText${ChromeAura.reset}';
       final searchCleanLength = searchLabel.length + queryText.length;
       final padding = ' ' * (w - 2 - searchCleanLength).clamp(0, w);
-      stdout.writeln('${ChromeAura.chrome}│$searchLabel$queryStyled$padding${ChromeAura.chrome}│${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}║$searchLabel$queryStyled$padding${ChromeAura.chrome}║${ChromeAura.reset}');
 
       // Dynamic free filter status
       final freeLabel = ' 🆓 [Tab] Toggle Free Filter: ';
@@ -222,30 +236,30 @@ class ModelsCommand extends InteractiveCommand {
           : '${ChromeAura.mist}$freeText${ChromeAura.reset}';
       final freeCleanLength = freeLabel.length + freeText.length;
       final freePadding = ' ' * (w - 2 - freeCleanLength).clamp(0, w);
-      stdout.writeln('${ChromeAura.chrome}│$freeLabel$freeStyled$freePadding${ChromeAura.chrome}│${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}║$freeLabel$freeStyled$freePadding${ChromeAura.chrome}║${ChromeAura.reset}');
 
-      stdout.writeln('${ChromeAura.chrome}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╠${ChromeAura.heavyH * (w - 2)}╣${ChromeAura.reset}');
 
       final navText = ' ↑/↓: Navigate | Enter: Select | Backspace: Del | Tab: Toggle Free';
       final navLine = ' ℹ️ $navText';
       final navCleanLength = navLine.length;
       final navPadding = ' ' * (w - 2 - navCleanLength).clamp(0, w);
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist}$navLine$navPadding${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}║${ChromeAura.mist}$navLine$navPadding${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
       
       final escLine = ' ℹ️ Esc: Cancel / Exit selection';
       final escCleanLength = escLine.length;
       final escPadding = ' ' * (w - 2 - escCleanLength).clamp(0, w);
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist}$escLine$escPadding${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}║${ChromeAura.mist}$escLine$escPadding${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╠${ChromeAura.heavyH * (w - 2)}╣${ChromeAura.reset}');
 
       // Errors list (if any provider failed to fetch)
       if (errors.isNotEmpty) {
         for (final entry in errors.entries) {
           final errLine = ' ⚠️ ${entry.key.toUpperCase()} fetch fail: ${entry.value}';
           final visibleErr = errLine.length > w - 4 ? '${errLine.substring(0, w - 7)}...' : errLine;
-          stdout.writeln('${ChromeAura.chrome}│${ChromeAura.wrath}${visibleErr.padRight(w - 2)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
+          stdout.writeln('${ChromeAura.chrome}║${ChromeAura.wrath}${visibleErr.padRight(w - 2)}${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
         }
-        stdout.writeln('${ChromeAura.chrome}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
+        stdout.writeln('${ChromeAura.chrome}╠${ChromeAura.heavyH * (w - 2)}╣${ChromeAura.reset}');
       }
 
       final currentFiltered = getFilteredOptions();
@@ -256,9 +270,9 @@ class ModelsCommand extends InteractiveCommand {
         if (optionIdx >= currentFiltered.length) {
           if (currentFiltered.isEmpty && i == 0) {
             final emptyText = ' ⚠️ No models found matching filter/search.';
-            stdout.writeln('${ChromeAura.chrome}│${ChromeAura.wrath}${emptyText.padRight(w - 2)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
+            stdout.writeln('${ChromeAura.chrome}║${ChromeAura.wrath}${emptyText.padRight(w - 2)}${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
           } else {
-            stdout.writeln('${ChromeAura.chrome}│${' ' * (w - 2)}${ChromeAura.chrome}│${ChromeAura.reset}');
+            stdout.writeln('${ChromeAura.chrome}║${' ' * (w - 2)}${ChromeAura.chrome}║${ChromeAura.reset}');
           }
           continue;
         }
@@ -271,11 +285,11 @@ class ModelsCommand extends InteractiveCommand {
         final mainPart = '$prefix${providerLabel.padRight(12)} • ${opt.modelName}';
         
         final activeText = opt.isCurrentlyConfigured ? ' [ACTIVE]' : '';
-        final freeText = opt.isFree ? ' [FREE]' : '';
+        final freeModelText = opt.isFree ? ' [FREE]' : '';
         
-        final totalCleanLength = mainPart.length + activeText.length + freeText.length;
+        final totalCleanLength = mainPart.length + activeText.length + freeModelText.length;
         final paddingLength = (w - 2 - totalCleanLength).clamp(0, w);
-        final padding = ' ' * paddingLength;
+        final rowPadding = ' ' * paddingLength;
         
         final style = isSelected ? ChromeAura.oracle : ChromeAura.chrome;
         final bgStyle = isSelected ? ChromeAura.bgActive : '';
@@ -288,19 +302,19 @@ class ModelsCommand extends InteractiveCommand {
             ? '${ChromeAura.sanctum}${ChromeAura.bold} [FREE]${ChromeAura.reset}$bgStyle$style' 
             : '';
         
-        final coloredLine = '$bgStyle$coloredMain$coloredActive$coloredFree$padding${ChromeAura.reset}';
-        stdout.writeln('${ChromeAura.chrome}│$coloredLine${ChromeAura.chrome}│${ChromeAura.reset}');
+        final coloredLine = '$bgStyle$coloredMain$coloredActive$coloredFree$rowPadding${ChromeAura.reset}';
+        stdout.writeln('${ChromeAura.chrome}║$coloredLine${ChromeAura.chrome}║${ChromeAura.reset}');
       }
 
-      stdout.writeln('${ChromeAura.chrome}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╠${ChromeAura.heavyH * (w - 2)}╣${ChromeAura.reset}');
       
       // Footer info
       final rangeText = currentFiltered.isEmpty
           ? ' No models '
           : ' Showing ${scrollOffset + 1}-${(scrollOffset + viewportSize).clamp(1, currentFiltered.length)} of ${currentFiltered.length} models ';
       final paddedRange = rangeText.padLeft((w - 2 + rangeText.length) ~/ 2).padRight(w - 2);
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist}$paddedRange${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}└${ChromeAura.hLine * (w - 2)}┘${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}║${ChromeAura.mist}$paddedRange${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╚${ChromeAura.heavyH * (w - 2)}╝${ChromeAura.reset}');
     }
 
     drawModelsScreen();

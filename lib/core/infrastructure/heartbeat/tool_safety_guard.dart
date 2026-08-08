@@ -23,6 +23,7 @@ class AetherToolSafetyGuard {
       'web_search', 'web_fetch',  // Network read-only — sandbox allows outbound HTTP
       'glob', 'grep', 'tool_search', 'brief', 'sleep',
       'ask_user_question', 'enter_plan_mode', 'exit_plan_mode',
+      'agent', 'send_message',
     };
     if (safeTools.contains(req.name)) {
       return false;

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:developer' as developer;
 import 'package:http/http.dart' as http;
+import 'package:apex_lite/cli/services/api_call_radar.dart';
 
 class CacheMetrics {
   final int inputTokens;
@@ -257,6 +258,7 @@ class PromptCacheOptimizer {
         headers: {'Content-Type': 'application/json'},
         body: json.encode(payload),
       );
+      ApiCallRadar.instance.record(category: ApiCallCategory.cache, method: 'POST', endpoint: 'gemini-cache', source: 'prompt_cache_optimizer', statusCode: response.statusCode);
 
       if (response.statusCode == 200 || response.statusCode == 201) {
         final decoded = json.decode(response.body) as Map<String, dynamic>;

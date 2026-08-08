@@ -25,7 +25,6 @@ class SessionCommand extends LocalCommand {
 
     final width = forge.logWidth ?? 70;
     final innerWidth = width - 4;
-    final borderColor = ChromeAura.chrome;
 
     final args = arguments.trim().split(' ');
     final subCommand = args[0].toLowerCase();
@@ -36,33 +35,54 @@ class SessionCommand extends LocalCommand {
       }
       final sessions = await sessionManager.listSessions();
       if (sessions.isEmpty) {
-        return TextResult('⟨K⟩ No saved historical sessions found.');
+        return _card(innerWidth,
+          ' 🔱 SESSION REGISTRY ',
+          '${ChromeAura.mist}No saved historical sessions found.${ChromeAura.reset}',
+          ' ⟨K⟩ /session create <title> to start ',
+        );
       }
 
       // Sort by updatedAt descending
       sessions.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
 
       final buffer = StringBuffer();
-      buffer.writeln('  $borderColor┌${ChromeAura.hLine * innerWidth}┐${ChromeAura.reset}');
-      final title = ' ⟨K⟩ HISTORICAL SESSIONS REGISTRY';
-      buffer.writeln('  $borderColor│${ChromeAura.bold}${ChromeAura.trident}$title${' ' * (innerWidth - _visibleLength(title))}${ChromeAura.reset}$borderColor│${ChromeAura.reset}');
-      buffer.writeln('  $borderColor├${ChromeAura.hLine * innerWidth}┤${ChromeAura.reset}');
+
+      // ═══ Top border ═══
+      final title = ' 🔱 HISTORICAL SESSIONS REGISTRY ';
+      final titleLeft = (innerWidth - title.length) ~/ 2;
+      final titleRight = innerWidth - title.length - titleLeft;
+      buffer.writeln('  ${ChromeAura.chrome}╔${ChromeAura.heavyH * titleLeft}$title${ChromeAura.heavyH * titleRight}╗${ChromeAura.reset}');
 
       for (var idx = 0; idx < sessions.length; idx++) {
         final s = sessions[idx];
         final isActive = s.id == sessionManager.currentSessionId;
-        final bullet = isActive ? ' ${ChromeAura.trident}▶${ChromeAura.reset}' : '   •';
-        final status = isActive ? ' ${ChromeAura.sanctum}(ACTIVE)${ChromeAura.reset}' : '';
-        final line = '$bullet [${s.id}] ${s.title}$status';
-        final details = '     Mode: ${s.mode.name} | Messages: ${s.messageCount} | Updated: ${s.updatedAt.toLocal().toString().substring(0, 19)}';
+        final bullet = isActive ? '${ChromeAura.trident}▶${ChromeAura.reset}' : '${ChromeAura.mist}•${ChromeAura.reset}';
+        final status = isActive ? ' ${ChromeAura.sanctum}[ACTIVE]${ChromeAura.reset}' : '';
+        final idStr = '${ChromeAura.phantom}${s.id}${ChromeAura.reset}';
+        final titleStr = '${ChromeAura.oracle}${s.title}${ChromeAura.reset}';
+        
+        final line = ' $bullet $idStr ${ChromeAura.mist}│${ChromeAura.reset} $titleStr$status';
+        final linePad = innerWidth - _visibleLength(line);
+        buffer.writeln('  ${ChromeAura.chrome}║$line${' ' * linePad.clamp(0, 500)}${ChromeAura.chrome}║${ChromeAura.reset}');
 
-        buffer.writeln('  $borderColor│$line${' ' * (innerWidth - _visibleLength(line))}$borderColor│${ChromeAura.reset}');
-        buffer.writeln('  $borderColor│${ChromeAura.mist}$details${' ' * (innerWidth - _visibleLength(details))}${ChromeAura.reset}$borderColor│${ChromeAura.reset}');
+        final modeStr = '${ChromeAura.mist}Mode:${ChromeAura.reset} ${ChromeAura.chrome}${s.mode.name}${ChromeAura.reset}';
+        final msgStr = '${ChromeAura.mist}Msgs:${ChromeAura.reset} ${ChromeAura.trident}${s.messageCount}${ChromeAura.reset}';
+        final timeStr = '${ChromeAura.mist}Updated:${ChromeAura.reset} ${ChromeAura.chrome}${s.updatedAt.toLocal().toString().substring(0, 19)}${ChromeAura.reset}';
+        final details = '     $modeStr ${ChromeAura.mist}│${ChromeAura.reset} $msgStr ${ChromeAura.mist}│${ChromeAura.reset} $timeStr';
+        final detailsPad = innerWidth - _visibleLength(details);
+        buffer.writeln('  ${ChromeAura.chrome}║$details${' ' * detailsPad.clamp(0, 500)}${ChromeAura.chrome}║${ChromeAura.reset}');
+
         if (idx < sessions.length - 1) {
-          buffer.writeln('  $borderColor│${' ' * innerWidth}│${ChromeAura.reset}');
+          buffer.writeln('  ${ChromeAura.chrome}║${' ' * innerWidth}║${ChromeAura.reset}');
         }
       }
-      buffer.writeln('  $borderColor└${ChromeAura.hLine * innerWidth}┘${ChromeAura.reset}');
+
+      // ═══ Bottom border ═══
+      final tip = ' ⟨K⟩ /session load <id> to restore ';
+      final tipLeft = (innerWidth - tip.length) ~/ 2;
+      final tipRight = innerWidth - tip.length - tipLeft;
+      buffer.write('  ${ChromeAura.chrome}╚${ChromeAura.hLine * tipLeft.clamp(0, 500)}$tip${ChromeAura.hLine * tipRight.clamp(0, 500)}╝${ChromeAura.reset}');
+
       return TextResult(buffer.toString());
     } else if (subCommand == 'load') {
       if (sessionManager == null) {
@@ -91,7 +111,11 @@ class SessionCommand extends LocalCommand {
       // Re-route core sessionId
       core.sessionId = targetId;
 
-      return TextResult('  ${ChromeAura.sanctum}✓ Successfully loaded session "$targetId"! ${history.length} messages restored.${ChromeAura.reset}');
+      return _card(innerWidth,
+        ' 🔱 SESSION LOADED ',
+        '${ChromeAura.sanctum}✓${ChromeAura.reset} Restored "${ChromeAura.oracle}$targetId${ChromeAura.reset}" ${ChromeAura.mist}│${ChromeAura.reset} ${ChromeAura.trident}${history.length}${ChromeAura.reset} messages',
+        ' ⟨K⟩ Session active ',
+      );
     } else if (subCommand == 'delete') {
       if (sessionManager == null) {
         return TextResult('Error: Session Manager not available.');
@@ -105,7 +129,11 @@ class SessionCommand extends LocalCommand {
       }
 
       await sessionManager.deleteSession(targetId);
-      return TextResult('  ${ChromeAura.sanctum}✓ Session "$targetId" deleted successfully from registry.${ChromeAura.reset}');
+      return _card(innerWidth,
+        ' 🔱 SESSION DELETED ',
+        '${ChromeAura.sanctum}✓${ChromeAura.reset} Session "${ChromeAura.oracle}$targetId${ChromeAura.reset}" removed from registry',
+        ' ⟨K⟩ /session list to verify ',
+      );
     } else if (subCommand == 'create') {
       if (sessionManager == null) {
         return TextResult('Error: Session Manager not available.');
@@ -133,10 +161,16 @@ class SessionCommand extends LocalCommand {
 
       core.sessionId = newSession.id;
 
-      return TextResult('  ${ChromeAura.sanctum}✓ Created new session "${newSession.title}" [ID: ${newSession.id}]!${ChromeAura.reset}');
+      return _card(innerWidth,
+        ' 🔱 SESSION CREATED ',
+        '${ChromeAura.sanctum}✓${ChromeAura.reset} "${ChromeAura.oracle}${newSession.title}${ChromeAura.reset}" ${ChromeAura.mist}ID:${ChromeAura.reset} ${ChromeAura.phantom}${newSession.id}${ChromeAura.reset}',
+        ' ⟨K⟩ Fresh context initialized ',
+      );
     }
 
-    // Default Telemetry Dashboard
+    // ═══════════════════════════════════════════════════════════════
+    // Default: Session Telemetry Dashboard
+    // ═══════════════════════════════════════════════════════════════
     final totalMessages = history.length;
     
     // Estimate tokens: 1 token ≈ 4 chars
@@ -177,64 +211,116 @@ class SessionCommand extends LocalCommand {
 
     final buffer = StringBuffer();
 
-    // Header Box
-    buffer.writeln('  $borderColor┌${ChromeAura.hLine * innerWidth}┐${ChromeAura.reset}');
-    final title = ' ⟨K⟩ SESSION STATISTICS & METRICS';
-    final titlePad = innerWidth - title.length;
-    buffer.writeln('  $borderColor│${ChromeAura.bold}${ChromeAura.trident}$title${' ' * titlePad.clamp(0, 200)}${ChromeAura.reset}$borderColor│${ChromeAura.reset}');
-    buffer.writeln('  $borderColor├${ChromeAura.hLine * innerWidth}┤${ChromeAura.reset}');
+    // ═══ Top border with centered title ═══
+    final dashTitle = ' 🔱 SESSION TELEMETRY DASHBOARD ';
+    final dashTitleLeft = (innerWidth - dashTitle.length) ~/ 2;
+    final dashTitleRight = innerWidth - dashTitle.length - dashTitleLeft;
+    buffer.writeln('  ${ChromeAura.chrome}╔${ChromeAura.heavyH * dashTitleLeft}$dashTitle${ChromeAura.heavyH * dashTitleRight}╗${ChromeAura.reset}');
 
-    // Context Token Box
-    buffer.writeln('  $borderColor│${ChromeAura.oracle} CONTEXT MEMORY SATURATION${' ' * (innerWidth - 27)}$borderColor│${ChromeAura.reset}');
-    final msgLine = '   • Total Messages:  $totalMessages messages';
-    buffer.writeln('  $borderColor│$msgLine${' ' * (innerWidth - _visibleLength(msgLine))}$borderColor│${ChromeAura.reset}');
+    // ─── CONTEXT MEMORY ───
+    _writeHeader(buffer, 'CONTEXT MEMORY SATURATION', innerWidth);
 
-    final tokenLine = '   • Active Tokens:    $totalTokens tokens (estimated)';
-    buffer.writeln('  $borderColor│$tokenLine${' ' * (innerWidth - _visibleLength(tokenLine))}$borderColor│${ChromeAura.reset}');
-
-    final breakdownLine = '     [Sys: $systemTokens | User: $userTokens | Asst: $assistantTokens | Tool: $toolTokens]';
-    buffer.writeln('  $borderColor│${ChromeAura.mist}$breakdownLine${' ' * (innerWidth - _visibleLength(breakdownLine))}${ChromeAura.reset}$borderColor│${ChromeAura.reset}');
-
-    // Progress Bar for token limits (Assuming a standard soft threshold limit of 8000 tokens)
-    final barWidth = (innerWidth - 10).clamp(10, 45);
-    final percent = (totalTokens / 8000).clamp(0.0, 1.0);
-    final fillCount = (barWidth * percent).round();
-    final emptyCount = barWidth - fillCount;
-    final pctString = '${(percent * 100).toInt()}%';
-    final progressLine = '   • Context Load:    [${"=" * fillCount}${" " * emptyCount}] $pctString';
-    buffer.writeln('  $borderColor│$progressLine${' ' * (innerWidth - _visibleLength(progressLine))}$borderColor│${ChromeAura.reset}');
-
-    buffer.writeln('  $borderColor├${ChromeAura.hLine * innerWidth}┤${ChromeAura.reset}');
-
-    // Telemetry Box
-    buffer.writeln('  $borderColor│${ChromeAura.oracle} LLM TELEMETRY HISTORY${' ' * (innerWidth - 23)}$borderColor│${ChromeAura.reset}');
+    _writeRow(buffer, '${ChromeAura.mist}Total Messages:${ChromeAura.reset}  ${ChromeAura.trident}$totalMessages${ChromeAura.reset}', innerWidth);
+    _writeRow(buffer, '${ChromeAura.mist}Active Tokens:${ChromeAura.reset}   ${ChromeAura.celestial}$totalTokens${ChromeAura.reset} ${ChromeAura.mist}(estimated)${ChromeAura.reset}', innerWidth);
     
-    final turnsLine = '   • Total Turns:     $tTurns prompt loops';
-    buffer.writeln('  $borderColor│$turnsLine${' ' * (innerWidth - _visibleLength(turnsLine))}$borderColor│${ChromeAura.reset}');
+    final breakdownText = '${ChromeAura.mist}Breakdown:${ChromeAura.reset}     ${ChromeAura.dim}[Sys: $systemTokens ${ChromeAura.mist}│${ChromeAura.reset}${ChromeAura.dim} User: $userTokens ${ChromeAura.mist}│${ChromeAura.reset}${ChromeAura.dim} Asst: $assistantTokens ${ChromeAura.mist}│${ChromeAura.reset}${ChromeAura.dim} Tool: $toolTokens]${ChromeAura.reset}';
+    _writeRow(buffer, breakdownText, innerWidth);
 
-    final generatedTokensLine = '   • Generated:       $tTokens tokens';
-    buffer.writeln('  $borderColor│$generatedTokensLine${' ' * (innerWidth - _visibleLength(generatedTokensLine))}$borderColor│${ChromeAura.reset}');
+    // Gradient progress bar for context load
+    final barWidth = (innerWidth - 24).clamp(10, 45);
+    final percent = (totalTokens / 8000).clamp(0.0, 1.0);
+    final pctString = '${(percent * 100).toInt()}%';
+    final barStr = ChromeAura.gradientBar(percent, barWidth);
+    final barLine = '${ChromeAura.mist}Context Load:${ChromeAura.reset}    $barStr ${ChromeAura.oracle}$pctString${ChromeAura.reset}';
+    _writeRow(buffer, barLine, innerWidth);
 
-    final toolCallsLine = '   • Tool Invocations: $tToolCalls calls';
-    buffer.writeln('  $borderColor│$toolCallsLine${' ' * (innerWidth - _visibleLength(toolCallsLine))}$borderColor│${ChromeAura.reset}');
+    // ─── LLM TELEMETRY ───
+    _writeHeader(buffer, 'LLM TELEMETRY HISTORY', innerWidth);
+    
+    _writeDualRow(buffer, 
+      '${ChromeAura.mist}Total Turns:${ChromeAura.reset}    ${ChromeAura.oracle}$tTurns${ChromeAura.reset}',
+      '${ChromeAura.mist}Generated:${ChromeAura.reset} ${ChromeAura.oracle}$tTokens${ChromeAura.reset} tokens',
+      innerWidth,
+    );
+    _writeDualRow(buffer,
+      '${ChromeAura.mist}Tool Calls:${ChromeAura.reset}     ${ChromeAura.phantom}$tToolCalls${ChromeAura.reset}',
+      '${ChromeAura.mist}Avg Speed:${ChromeAura.reset} ${ChromeAura.sanctum}${avgLatencySec}s${ChromeAura.reset}/turn',
+      innerWidth,
+    );
 
-    final speedLine = '   • Response Speed:  Avg $avgLatencySec seconds/turn';
-    buffer.writeln('  $borderColor│$speedLine${' ' * (innerWidth - _visibleLength(speedLine))}$borderColor│${ChromeAura.reset}');
-
-    buffer.writeln('  $borderColor├${ChromeAura.hLine * innerWidth}┤${ChromeAura.reset}');
-
-    // Active Engine
+    // ─── ACTIVE ENGINE ───
+    _writeHeader(buffer, 'ACTIVE ENGINE', innerWidth);
+    
     final activeModel = forge.modelName ?? 'unknown';
     final activeProvider = forge.provider ?? 'local';
-    final engineLine = '  Active Engine: ${activeProvider.toUpperCase()} • $activeModel';
-    buffer.writeln('  $borderColor│${ChromeAura.sanctum}$engineLine${' ' * (innerWidth - _visibleLength(engineLine))}${ChromeAura.reset}$borderColor│${ChromeAura.reset}');
+    final engineLine = '${ChromeAura.sanctum}▶${ChromeAura.reset} ${ChromeAura.trident}${activeProvider.toUpperCase()}${ChromeAura.reset} ${ChromeAura.mist}•${ChromeAura.reset} ${ChromeAura.oracle}$activeModel${ChromeAura.reset}';
+    _writeRow(buffer, engineLine, innerWidth);
 
-    buffer.writeln('  $borderColor└${ChromeAura.hLine * innerWidth}┘${ChromeAura.reset}');
+    // ═══ Bottom border ═══
+    final bottomTip = ' ⟨K⟩ /session list · /compact · /export ';
+    final bottomLeft = (innerWidth - bottomTip.length) ~/ 2;
+    final bottomRight = innerWidth - bottomTip.length - bottomLeft;
+    buffer.write('  ${ChromeAura.chrome}╚${ChromeAura.hLine * bottomLeft.clamp(0, 500)}$bottomTip${ChromeAura.hLine * bottomRight.clamp(0, 500)}╝${ChromeAura.reset}');
+
+    return TextResult(buffer.toString());
+  }
+
+  void _writeHeader(StringBuffer buffer, String title, int innerWidth) {
+    final titleStr = '── $title ';
+    final pad = innerWidth - titleStr.length;
+    buffer.writeln('  ${ChromeAura.chrome}├$titleStr${ChromeAura.hLine * pad.clamp(0, 500)}┤${ChromeAura.reset}');
+  }
+
+  void _writeRow(StringBuffer buffer, String content, int innerWidth) {
+    final pad = innerWidth - _visibleLength(content) - 2;
+    buffer.writeln('  ${ChromeAura.chrome}║${ChromeAura.reset} $content${' ' * pad.clamp(0, 500)} ${ChromeAura.chrome}║${ChromeAura.reset}');
+  }
+
+  void _writeDualRow(StringBuffer buffer, String left, String right, int innerWidth) {
+    final midCol = innerWidth ~/ 2;
+    final leftVis = _visibleLength(left);
+    final rightVis = _visibleLength(right);
+    final leftPad = midCol - leftVis - 2;
+    final rightPad = (innerWidth - midCol) - rightVis - 2;
+    buffer.writeln('  ${ChromeAura.chrome}║${ChromeAura.reset} '
+        '$left${' ' * leftPad.clamp(0, 500)}'
+        '${ChromeAura.mist}│${ChromeAura.reset} '
+        '$right${' ' * rightPad.clamp(0, 500)} '
+        '${ChromeAura.chrome}║${ChromeAura.reset}');
+  }
+
+  LocalCommandResult _card(int innerWidth, String title, String content, String tip) {
+    final buffer = StringBuffer();
+    final titleLeft = (innerWidth - title.length) ~/ 2;
+    final titleRight = innerWidth - title.length - titleLeft;
+    buffer.writeln('  ${ChromeAura.chrome}╔${ChromeAura.heavyH * titleLeft.clamp(0, 500)}$title${ChromeAura.heavyH * titleRight.clamp(0, 500)}╗${ChromeAura.reset}');
+
+    final contentPad = innerWidth - _visibleLength(content) - 2;
+    buffer.writeln('  ${ChromeAura.chrome}║${ChromeAura.reset} $content${' ' * contentPad.clamp(0, 500)} ${ChromeAura.chrome}║${ChromeAura.reset}');
+
+    final tipLeft = (innerWidth - tip.length) ~/ 2;
+    final tipRight = innerWidth - tip.length - tipLeft;
+    buffer.write('  ${ChromeAura.chrome}╚${ChromeAura.hLine * tipLeft.clamp(0, 500)}$tip${ChromeAura.hLine * tipRight.clamp(0, 500)}╝${ChromeAura.reset}');
 
     return TextResult(buffer.toString());
   }
 
   int _visibleLength(String text) {
-    return text.replaceAll(RegExp(r'\x1b\[[0-9;]*[a-zA-Z]'), '').length;
+    final clean = text.replaceAll(RegExp(r'\x1b\[[0-9;]*[a-zA-Z]'), '');
+    var width = 0;
+    for (final rune in clean.runes) {
+      if ((rune >= 0x4e00 && rune <= 0x9fff) ||
+          (rune >= 0x3400 && rune <= 0x4dbf) ||
+          (rune >= 0xf900 && rune <= 0xfaff)) {
+        width += 2;
+      } else if (rune >= 0x1f000 && rune <= 0x1faff) {
+        width += 2;
+      } else if (rune >= 0x2600 && rune <= 0x27bf) {
+        width += 2;
+      } else {
+        width += 1;
+      }
+    }
+    return width;
   }
 }

@@ -1,10 +1,10 @@
 import 'dart:io';
-import 'package:path/path.dart' as p;
+import 'dart:convert';
 import '../apex_command.dart';
 import 'package:apex_lite/cli/theme/chrome_aura.dart';
 import 'package:apex_lite/core/infrastructure/services/apex_curator_engine.dart';
 
-/// ⟨K⟩ CuratorCommand — Autonomous background skills curator controls
+/// ⟨K⟩ CuratorCommand — Premium double-bordered autonomous skills curator
 class CuratorCommand extends LocalCommand {
   CuratorCommand() : super(
     name: 'curator',
@@ -23,7 +23,6 @@ class CuratorCommand extends LocalCommand {
     final sandboxRoot = forge.sandboxPath as String? ?? './apex_sandbox';
     final width = forge.logWidth ?? 70;
     final innerWidth = width - 4;
-    final borderColor = ChromeAura.chrome;
 
     final curator = ApexCuratorEngine(sandboxRoot: sandboxRoot);
 
@@ -32,12 +31,16 @@ class CuratorCommand extends LocalCommand {
 
     if (subCommand == 'list') {
       // Crawl and update list of skills
-      final transitions = await curator.executeStateTransitions(); // Sync telemetry and discover skills
+      await curator.executeStateTransitions(); // Sync telemetry and discover skills
       
       // Read skills telemetry to list them
       final telemetryFile = curator.telemetryFile;
       if (!telemetryFile.existsSync()) {
-        return TextResult('⟨K⟩ No skills telemetry registry found. Load some skills using `/skill` first.');
+        return _card(innerWidth,
+          ' 🔱 SKILLS PORTFOLIO ',
+          '${ChromeAura.mist}No skills telemetry registry found. Load some skills first.${ChromeAura.reset}',
+          ' ⟨K⟩ Use /skill to get started ',
+        );
       }
 
       final text = await telemetryFile.readAsString();
@@ -46,14 +49,20 @@ class CuratorCommand extends LocalCommand {
       );
 
       if (telemetry.isEmpty) {
-        return TextResult('⟨K⟩ Skills library telemetry is empty. Load a skill first.');
+        return _card(innerWidth,
+          ' 🔱 SKILLS PORTFOLIO ',
+          '${ChromeAura.mist}Skills library telemetry is empty. Load a skill first.${ChromeAura.reset}',
+          ' ⟨K⟩ Use /skill to get started ',
+        );
       }
 
       final buffer = StringBuffer();
-      buffer.writeln('  $borderColor┌${ChromeAura.hLine * innerWidth}┐${ChromeAura.reset}');
-      final title = ' ⟨K⟩ SKILLS INTELLECTUAL PORTFOLIO';
-      buffer.writeln('  $borderColor│${ChromeAura.bold}${ChromeAura.trident}$title${' ' * (innerWidth - _visibleLength(title))}${ChromeAura.reset}$borderColor│${ChromeAura.reset}');
-      buffer.writeln('  $borderColor├${ChromeAura.hLine * innerWidth}┤${ChromeAura.reset}');
+
+      // ═══ Top border ═══
+      final title = ' 🔱 SKILLS INTELLECTUAL PORTFOLIO ';
+      final titleLeft = (innerWidth - title.length) ~/ 2;
+      final titleRight = innerWidth - title.length - titleLeft;
+      buffer.writeln('  ${ChromeAura.chrome}╔${ChromeAura.heavyH * titleLeft}$title${ChromeAura.heavyH * titleRight}╗${ChromeAura.reset}');
 
       final keys = telemetry.keys.toList();
       for (var idx = 0; idx < keys.length; idx++) {
@@ -66,40 +75,49 @@ class CuratorCommand extends LocalCommand {
                 ? ChromeAura.celestial
                 : ChromeAura.mist;
         
-        final pinStatus = record.isPinned ? ' ${ChromeAura.oracle}📌[PINNED]${ChromeAura.reset}' : '';
-        final line = '   • ${record.name} $pinStatus';
-        final details = '     State: $stateAura${record.state.name.toUpperCase()}${ChromeAura.reset} | Updated: ${record.lastActivityAt.toLocal().toString().substring(0, 19)}';
+        final pinStatus = record.isPinned ? ' ${ChromeAura.oracle}📌${ChromeAura.reset}' : '';
+        final nameStr = '${ChromeAura.oracle}${record.name}${ChromeAura.reset}';
+        final line = ' • $nameStr$pinStatus';
+        final linePad = innerWidth - _visibleLength(line);
+        buffer.writeln('  ${ChromeAura.chrome}║$line${' ' * linePad.clamp(0, 500)}${ChromeAura.chrome}║${ChromeAura.reset}');
 
-        buffer.writeln('  $borderColor│$line${' ' * (innerWidth - _visibleLength(line))}$borderColor│${ChromeAura.reset}');
-        buffer.writeln('  $borderColor│${ChromeAura.mist}$details${' ' * (innerWidth - _visibleLength(details))}${ChromeAura.reset}$borderColor│${ChromeAura.reset}');
+        final stateStr = '${stateAura}${record.state.name.toUpperCase()}${ChromeAura.reset}';
+        final timeStr = '${ChromeAura.chrome}${record.lastActivityAt.toLocal().toString().substring(0, 19)}${ChromeAura.reset}';
+        final details = '     ${ChromeAura.mist}State:${ChromeAura.reset} $stateStr ${ChromeAura.mist}│ Updated:${ChromeAura.reset} $timeStr';
+        final detailsPad = innerWidth - _visibleLength(details);
+        buffer.writeln('  ${ChromeAura.chrome}║$details${' ' * detailsPad.clamp(0, 500)}${ChromeAura.chrome}║${ChromeAura.reset}');
+
         if (idx < keys.length - 1) {
-          buffer.writeln('  $borderColor│${' ' * innerWidth}│${ChromeAura.reset}');
+          buffer.writeln('  ${ChromeAura.chrome}║${' ' * innerWidth}║${ChromeAura.reset}');
         }
       }
-      buffer.writeln('  $borderColor└${ChromeAura.hLine * innerWidth}┘${ChromeAura.reset}');
+
+      // ═══ Bottom ═══
+      final tip = ' ⟨K⟩ /curator sweep · pin · archive ';
+      final tipLeft = (innerWidth - tip.length) ~/ 2;
+      final tipRight = innerWidth - tip.length - tipLeft;
+      buffer.write('  ${ChromeAura.chrome}╚${ChromeAura.hLine * tipLeft.clamp(0, 500)}$tip${ChromeAura.hLine * tipRight.clamp(0, 500)}╝${ChromeAura.reset}');
+
       return TextResult(buffer.toString());
     } else if (subCommand == 'sweep') {
       final report = await curator.executeStateTransitions();
       
       final buffer = StringBuffer();
-      buffer.writeln('  ${ChromeAura.sanctum}┌${ChromeAura.hLine * innerWidth}┐${ChromeAura.reset}');
-      final msg = ' ✓ CURATOR STATE SWEEP COMPLETED!';
-      buffer.writeln('  ${ChromeAura.sanctum}│${ChromeAura.bold}$msg${' ' * (innerWidth - _visibleLength(msg))}${ChromeAura.reset}${ChromeAura.sanctum}│${ChromeAura.reset}');
-      buffer.writeln('  ${ChromeAura.sanctum}├${ChromeAura.hLine * innerWidth}┤${ChromeAura.reset}');
+      final title = ' 🔱 CURATOR SWEEP COMPLETE ';
+      final titleLeft = (innerWidth - title.length) ~/ 2;
+      final titleRight = innerWidth - title.length - titleLeft;
+      buffer.writeln('  ${ChromeAura.sanctum}╔${ChromeAura.heavyH * titleLeft}$title${ChromeAura.heavyH * titleRight}╗${ChromeAura.reset}');
       
-      final staleMsg = '   • Marked Stale:   ${report['marked_stale']} skills';
-      buffer.writeln('  ${ChromeAura.sanctum}│$staleMsg${' ' * (innerWidth - _visibleLength(staleMsg))}${ChromeAura.sanctum}│${ChromeAura.reset}');
+      _writeRowColored(buffer, '${ChromeAura.mist}Marked Stale:${ChromeAura.reset}    ${ChromeAura.celestial}${report['marked_stale']}${ChromeAura.reset} skills', innerWidth, ChromeAura.sanctum);
+      _writeRowColored(buffer, '${ChromeAura.mist}Auto-Archived:${ChromeAura.reset}   ${ChromeAura.oracle}${report['archived']}${ChromeAura.reset} skills', innerWidth, ChromeAura.sanctum);
+      _writeRowColored(buffer, '${ChromeAura.mist}Reactivated:${ChromeAura.reset}     ${ChromeAura.sanctum}${report['reactivated']}${ChromeAura.reset} skills', innerWidth, ChromeAura.sanctum);
+      _writeRowColored(buffer, '${ChromeAura.mist}Consolidated:${ChromeAura.reset}    ${ChromeAura.phantom}${report['consolidated_absorbed']}${ChromeAura.reset} → ${ChromeAura.phantom}${report['consolidated_umbrellas']}${ChromeAura.reset} umbrella(s)', innerWidth, ChromeAura.sanctum);
       
-      final archMsg = '   • Auto-Archived:  ${report['archived']} skills';
-      buffer.writeln('  ${ChromeAura.sanctum}│$archMsg${' ' * (innerWidth - _visibleLength(archMsg))}${ChromeAura.sanctum}│${ChromeAura.reset}');
+      final tip = ' ⟨K⟩ Skills lifecycle updated ';
+      final tipLeft = (innerWidth - tip.length) ~/ 2;
+      final tipRight = innerWidth - tip.length - tipLeft;
+      buffer.write('  ${ChromeAura.sanctum}╚${ChromeAura.hLine * tipLeft.clamp(0, 500)}$tip${ChromeAura.hLine * tipRight.clamp(0, 500)}╝${ChromeAura.reset}');
 
-      final reactMsg = '   • Reactivated:    ${report['reactivated']} skills';
-      buffer.writeln('  ${ChromeAura.sanctum}│$reactMsg${' ' * (innerWidth - _visibleLength(reactMsg))}${ChromeAura.sanctum}│${ChromeAura.reset}');
-
-      final absorbMsg = '   • Consolidated:   Merged ${report['consolidated_absorbed']} skills into ${report['consolidated_umbrellas']} umbrella(s)';
-      buffer.writeln('  ${ChromeAura.sanctum}│$absorbMsg${' ' * (innerWidth - _visibleLength(absorbMsg))}${ChromeAura.sanctum}│${ChromeAura.reset}');
-      
-      buffer.writeln('  ${ChromeAura.sanctum}└${ChromeAura.hLine * innerWidth}┘${ChromeAura.reset}');
       return TextResult(buffer.toString());
     } else if (subCommand == 'pin') {
       if (args.length < 2 || args[1].trim().isEmpty) {
@@ -108,7 +126,11 @@ class CuratorCommand extends LocalCommand {
       final target = args[1].trim();
       final success = await curator.setPinStatus(target, true);
       if (success) {
-        return TextResult('  ${ChromeAura.sanctum}✓ Pinned skill "$target"! It will bypass all automatic transitions.${ChromeAura.reset}');
+        return _card(innerWidth,
+          ' 🔱 SKILL PINNED ',
+          '${ChromeAura.sanctum}✓${ChromeAura.reset} "${ChromeAura.oracle}$target${ChromeAura.reset}" pinned — bypasses automatic transitions',
+          ' ⟨K⟩ /curator unpin to release ',
+        );
       }
       return TextResult('  ${ChromeAura.wrath}✗ Error: Skill "$target" not found in active telemetry registry.${ChromeAura.reset}');
     } else if (subCommand == 'unpin') {
@@ -118,7 +140,11 @@ class CuratorCommand extends LocalCommand {
       final target = args[1].trim();
       final success = await curator.setPinStatus(target, false);
       if (success) {
-        return TextResult('  ${ChromeAura.sanctum}✓ Unpinned skill "$target". Automatic transitions active.${ChromeAura.reset}');
+        return _card(innerWidth,
+          ' 🔱 SKILL UNPINNED ',
+          '${ChromeAura.sanctum}✓${ChromeAura.reset} "${ChromeAura.oracle}$target${ChromeAura.reset}" unpinned — automatic transitions active',
+          ' ⟨K⟩ Curator managing lifecycle ',
+        );
       }
       return TextResult('  ${ChromeAura.wrath}✗ Error: Skill "$target" not found.${ChromeAura.reset}');
     } else if (subCommand == 'archive') {
@@ -128,40 +154,92 @@ class CuratorCommand extends LocalCommand {
       final target = args[1].trim();
       final success = await curator.manuallyArchiveSkill(target);
       if (success) {
-        return TextResult('  ${ChromeAura.sanctum}✓ Skill "$target" manually archived and relocated to .archive/$target.${ChromeAura.reset}');
+        return _card(innerWidth,
+          ' 🔱 SKILL ARCHIVED ',
+          '${ChromeAura.sanctum}✓${ChromeAura.reset} "${ChromeAura.oracle}$target${ChromeAura.reset}" → .archive/$target',
+          ' ⟨K⟩ /curator list to verify ',
+        );
       }
       return TextResult('  ${ChromeAura.wrath}✗ Error: Source skill directory "$target" does not exist.${ChromeAura.reset}');
     }
 
-    // Default Telemetry Dashboard
+    // Default: Curator Telemetry Dashboard
     final buffer = StringBuffer();
-    buffer.writeln('  $borderColor┌${ChromeAura.hLine * innerWidth}┐${ChromeAura.reset}');
-    final dashboard = ' ⟨K⟩ AUTONOMOUS CURATOR telemetry';
-    buffer.writeln('  $borderColor│${ChromeAura.bold}${ChromeAura.trident}$dashboard${' ' * (innerWidth - _visibleLength(dashboard))}${ChromeAura.reset}$borderColor│${ChromeAura.reset}');
-    buffer.writeln('  $borderColor├${ChromeAura.hLine * innerWidth}┤${ChromeAura.reset}');
 
-    final gateText = '   • Time-gated checks:';
-    buffer.writeln('  $borderColor│$gateText${' ' * (innerWidth - _visibleLength(gateText))}$borderColor│${ChromeAura.reset}');
+    final dashTitle = ' 🔱 AUTONOMOUS CURATOR TELEMETRY ';
+    final dashTitleLeft = (innerWidth - dashTitle.length) ~/ 2;
+    final dashTitleRight = innerWidth - dashTitle.length - dashTitleLeft;
+    buffer.writeln('  ${ChromeAura.chrome}╔${ChromeAura.heavyH * dashTitleLeft}$dashTitle${ChromeAura.heavyH * dashTitleRight}╗${ChromeAura.reset}');
 
-    final intervalText = '     - Sweep Interval:  7 days';
-    buffer.writeln('  $borderColor│${ChromeAura.mist}$intervalText${' ' * (innerWidth - _visibleLength(intervalText))}${ChromeAura.reset}$borderColor│${ChromeAura.reset}');
+    // Section: Time Gates
+    _writeHeader(buffer, 'TIME-GATED LIFECYCLE RULES', innerWidth);
+    _writeRow(buffer, '${ChromeAura.mist}Sweep Interval:${ChromeAura.reset}   ${ChromeAura.oracle}7 days${ChromeAura.reset}', innerWidth);
+    _writeRow(buffer, '${ChromeAura.mist}Stale Cutoff:${ChromeAura.reset}     ${ChromeAura.celestial}30 days${ChromeAura.reset}', innerWidth);
+    _writeRow(buffer, '${ChromeAura.mist}Archive Cutoff:${ChromeAura.reset}   ${ChromeAura.phantom}90 days${ChromeAura.reset}', innerWidth);
 
-    final staleText = '     - Stale Cutoff:    30 days';
-    buffer.writeln('  $borderColor│${ChromeAura.mist}$staleText${' ' * (innerWidth - _visibleLength(staleText))}${ChromeAura.reset}$borderColor│${ChromeAura.reset}');
+    // Section: Actions
+    _writeHeader(buffer, 'AVAILABLE ACTIONS', innerWidth);
+    _writeRow(buffer, '${ChromeAura.trident}/curator list${ChromeAura.reset}      ${ChromeAura.mist}View skills portfolio${ChromeAura.reset}', innerWidth);
+    _writeRow(buffer, '${ChromeAura.trident}/curator sweep${ChromeAura.reset}     ${ChromeAura.mist}Execute lifecycle transitions${ChromeAura.reset}', innerWidth);
+    _writeRow(buffer, '${ChromeAura.trident}/curator pin${ChromeAura.reset}       ${ChromeAura.mist}Freeze skill from auto-transitions${ChromeAura.reset}', innerWidth);
+    _writeRow(buffer, '${ChromeAura.trident}/curator archive${ChromeAura.reset}   ${ChromeAura.mist}Manually archive a skill${ChromeAura.reset}', innerWidth);
 
-    final archText = '     - Archive Cutoff:  90 days';
-    buffer.writeln('  $borderColor│${ChromeAura.mist}$archText${' ' * (innerWidth - _visibleLength(archText))}${ChromeAura.reset}$borderColor│${ChromeAura.reset}');
+    final tip = ' ⟨K⟩ Autonomous skills lifecycle manager ';
+    final tipLeft = (innerWidth - tip.length) ~/ 2;
+    final tipRight = innerWidth - tip.length - tipLeft;
+    buffer.write('  ${ChromeAura.chrome}╚${ChromeAura.hLine * tipLeft.clamp(0, 500)}$tip${ChromeAura.hLine * tipRight.clamp(0, 500)}╝${ChromeAura.reset}');
 
-    buffer.writeln('  $borderColor├${ChromeAura.hLine * innerWidth}┤${ChromeAura.reset}');
+    return TextResult(buffer.toString());
+  }
 
-    final actionHint = '  Use `/curator list` to view skills portfolio or `/curator sweep` to sweep.';
-    buffer.writeln('  $borderColor│${ChromeAura.sanctum}$actionHint${' ' * (innerWidth - _visibleLength(actionHint))}${ChromeAura.reset}$borderColor│${ChromeAura.reset}');
-    buffer.writeln('  $borderColor└${ChromeAura.hLine * innerWidth}┘${ChromeAura.reset}');
+  void _writeHeader(StringBuffer buffer, String title, int innerWidth) {
+    final titleStr = '── $title ';
+    final pad = innerWidth - titleStr.length;
+    buffer.writeln('  ${ChromeAura.chrome}├$titleStr${ChromeAura.hLine * pad.clamp(0, 500)}┤${ChromeAura.reset}');
+  }
+
+  void _writeRow(StringBuffer buffer, String content, int innerWidth) {
+    final pad = innerWidth - _visibleLength(content) - 2;
+    buffer.writeln('  ${ChromeAura.chrome}║${ChromeAura.reset} $content${' ' * pad.clamp(0, 500)} ${ChromeAura.chrome}║${ChromeAura.reset}');
+  }
+
+  void _writeRowColored(StringBuffer buffer, String content, int innerWidth, String borderColor) {
+    final pad = innerWidth - _visibleLength(content) - 2;
+    buffer.writeln('  $borderColor║${ChromeAura.reset} $content${' ' * pad.clamp(0, 500)} $borderColor║${ChromeAura.reset}');
+  }
+
+  LocalCommandResult _card(int innerWidth, String title, String content, String tip) {
+    final buffer = StringBuffer();
+    final titleLeft = (innerWidth - title.length) ~/ 2;
+    final titleRight = innerWidth - title.length - titleLeft;
+    buffer.writeln('  ${ChromeAura.chrome}╔${ChromeAura.heavyH * titleLeft.clamp(0, 500)}$title${ChromeAura.heavyH * titleRight.clamp(0, 500)}╗${ChromeAura.reset}');
+
+    final contentPad = innerWidth - _visibleLength(content) - 2;
+    buffer.writeln('  ${ChromeAura.chrome}║${ChromeAura.reset} $content${' ' * contentPad.clamp(0, 500)} ${ChromeAura.chrome}║${ChromeAura.reset}');
+
+    final tipLeft = (innerWidth - tip.length) ~/ 2;
+    final tipRight = innerWidth - tip.length - tipLeft;
+    buffer.write('  ${ChromeAura.chrome}╚${ChromeAura.hLine * tipLeft.clamp(0, 500)}$tip${ChromeAura.hLine * tipRight.clamp(0, 500)}╝${ChromeAura.reset}');
 
     return TextResult(buffer.toString());
   }
 
   int _visibleLength(String text) {
-    return text.replaceAll(RegExp(r'\x1b\[[0-9;]*[a-zA-Z]'), '').length;
+    final clean = text.replaceAll(RegExp(r'\x1b\[[0-9;]*[a-zA-Z]'), '');
+    var width = 0;
+    for (final rune in clean.runes) {
+      if ((rune >= 0x4e00 && rune <= 0x9fff) ||
+          (rune >= 0x3400 && rune <= 0x4dbf) ||
+          (rune >= 0xf900 && rune <= 0xfaff)) {
+        width += 2;
+      } else if (rune >= 0x1f000 && rune <= 0x1faff) {
+        width += 2;
+      } else if (rune >= 0x2600 && rune <= 0x27bf) {
+        width += 2;
+      } else {
+        width += 1;
+      }
+    }
+    return width;
   }
 }

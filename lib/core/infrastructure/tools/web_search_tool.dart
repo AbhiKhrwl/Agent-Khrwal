@@ -1,8 +1,8 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../../domain/interfaces/i_tool.dart';
 import '../../domain/entities/tool_entities.dart';
+import 'package:apex_lite/cli/services/api_call_radar.dart';
 
 /// Sandboxed Web Search Tool with online DDG scraping and offline mock fallbacks.
 class WebSearchTool implements ITool {
@@ -77,6 +77,7 @@ class WebSearchTool implements ITool {
           'User-Agent':
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
         }).timeout(const Duration(seconds: 10));
+        ApiCallRadar.instance.record(category: ApiCallCategory.tool, method: 'GET', endpoint: 'duckduckgo', source: 'web_search', statusCode: response.statusCode);
 
         if (response.statusCode == 200) {
           rawHits = _parseDdgHtml(response.body);

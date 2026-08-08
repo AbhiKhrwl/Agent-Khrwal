@@ -113,11 +113,13 @@ class FileWriteTool implements ITool {
 
       // 🔱 MASSIVE UPGRADE: Smart overwrite protection
       // If file exists with IDENTICAL content → return success (task is already done)
-      // If file exists with DIFFERENT content → require force=true
+      // If file exists but is EMPTY (e.g. created via touch/placeholder) → allow write
+      // If file exists with DIFFERENT non-empty content → require force=true
       // This prevents the infinite retry loop where the model rewrites
-      // the same file it just created.
+      // the same file it just created, or fails on touched files.
       final force = params['force'] == true || params['force'] == 'true';
       if (file.existsSync() && !force) {
+        bool shouldBlock = true;
         try {
           final existingContent = await file.readAsString();
           if (existingContent.trim() == content.trim()) {
@@ -129,18 +131,24 @@ class FileWriteTool implements ITool {
                   'No action needed — task already completed.',
             );
           }
+          if (existingContent.trim().isEmpty) {
+            // 🔱 File exists but is empty — allow writing without force=true!
+            shouldBlock = false;
+          }
         } catch (_) {
           // Can't read file — fall through to error
         }
-        return ToolResult(
-          toolUseId: '',
-          content:
-              'Error: File already exists: $rawPath. '
-              'Add force=true to your file_write call to overwrite it. '
-              'If you already wrote this file successfully, STOP and summarize your work.',
-          isError: true,
-          errorType: ToolErrorType.validation,
-        );
+        if (shouldBlock) {
+          return ToolResult(
+            toolUseId: '',
+            content:
+                'Error: File already exists: $rawPath. '
+                'Add force=true to your file_write call to overwrite it. '
+                'If you already wrote this file successfully, STOP and summarize your work.',
+            isError: true,
+            errorType: ToolErrorType.validation,
+          );
+        }
       }
 
       // 🔱 Rollback System: Create backup snapshot of existing file before overwriting

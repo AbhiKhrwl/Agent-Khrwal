@@ -1,4 +1,4 @@
-/// ⟨K⟩ ConfigCommand — Interactive Alternate-Screen Config Panel
+/// ⟨K⟩ ConfigCommand — Premium double-bordered Interactive Alternate-Screen Config Panel
 library;
 
 import 'dart:async';
@@ -38,31 +38,32 @@ class ConfigCommand extends InteractiveCommand {
       stdout.write('\x1b[1;1H'); // Move caret to top-left
 
       final w = 70;
-      stdout.writeln('${ChromeAura.trident}┌${ChromeAura.hLine * (w - 2)}┐${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.trident}│${ChromeAura.bold} ⟨K⟩ AGENT KHARWAL — INTERACTIVE PREFERENCES MANAGER ${' ' * (w - 53)}${ChromeAura.reset}${ChromeAura.trident}│${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.trident}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.trident}│${ChromeAura.mist} Configure priority failover pool, active API models, and options. ${' ' * (w - 66)}${ChromeAura.reset}${ChromeAura.trident}│${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.trident}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╔${ChromeAura.heavyH * (w - 2)}╗${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}║${ChromeAura.bold} ⟨K⟩ AGENT KHARWAL — INTERACTIVE PREFERENCES MANAGER ${' ' * (w - 55)}${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╠${ChromeAura.heavyH * (w - 2)}╣${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}║${ChromeAura.mist} Configure priority failover pool, active API models, and options. ${' ' * (w - 68)}${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╠${ChromeAura.heavyH * (w - 2)}╣${ChromeAura.reset}');
 
       if (pool.isEmpty) {
-        stdout.writeln('${ChromeAura.trident}│${ChromeAura.wrath}  No models configured. Restart and run setup wizard. ${' ' * (w - 54)}${ChromeAura.reset}${ChromeAura.trident}│${ChromeAura.reset}');
+        stdout.writeln('${ChromeAura.chrome}║${ChromeAura.wrath}  No models configured. Restart and run setup wizard. ${' ' * (w - 56)}${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
       } else {
         for (int i = 0; i < pool.length; i++) {
           final isSelected = i == selectedIdx;
           final prefix = isSelected ? ' ▶ ' : '   ';
           final style = isSelected ? ChromeAura.oracle : ChromeAura.chrome;
+          final bgStyle = isSelected ? ChromeAura.bgActive : '';
           final p = pool[i];
           final line = '$prefix[#${i + 1}] ${p.type.toUpperCase()} • ${p.model}';
           final visibleLen = line.length;
-          stdout.writeln('${ChromeAura.trident}│$style$line${' ' * (w - visibleLen - 2)}${ChromeAura.reset}${ChromeAura.trident}│${ChromeAura.reset}');
+          stdout.writeln('${ChromeAura.chrome}║$bgStyle$style$line${' ' * (w - visibleLen - 2)}${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
         }
       }
 
-      stdout.writeln('${ChromeAura.trident}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.trident}│${ChromeAura.chrome}  Controls: ${' ' * (w - 14)}${ChromeAura.trident}│${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.trident}│${ChromeAura.mist}  [↑/↓] Navigate Pool  [p] Promote priority  [d] Demote priority ${' ' * (w - 63)}${ChromeAura.reset}${ChromeAura.trident}│${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.trident}│${ChromeAura.mist}  [s] Save & Exit      [q] Cancel & Discard changes ${' ' * (w - 53)}${ChromeAura.reset}${ChromeAura.trident}│${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.trident}└${ChromeAura.hLine * (w - 2)}┘${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╠${ChromeAura.heavyH * (w - 2)}╣${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}║${ChromeAura.chrome}  Controls: ${' ' * (w - 14)}${ChromeAura.chrome}║${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}║${ChromeAura.mist}  [↑/↓] Navigate Pool  [p] Promote priority  [d] Demote priority ${' ' * (w - 69)}${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}║${ChromeAura.mist}  [s] Save & Exit      [q] Cancel & Discard changes ${' ' * (w - 55)}${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╚${ChromeAura.heavyH * (w - 2)}╝${ChromeAura.reset}');
     }
 
     drawConfigScreen();

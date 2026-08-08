@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:http/http.dart' as http;
 import '../../domain/interfaces/i_tool.dart';
 import '../../domain/entities/tool_entities.dart';
+import 'package:apex_lite/cli/services/api_call_radar.dart';
 
 /// Sandboxed Web Fetch Tool that fetches online content, converts HTML to Markdown,
 /// handles redirects, limits output to 100KB, and processes the text safely.
@@ -70,6 +71,7 @@ class WebFetchTool implements ITool {
       try {
         final request = http.Request('GET', uri)..followRedirects = false;
         final streamedResponse = await client.send(request).timeout(const Duration(seconds: 10));
+        ApiCallRadar.instance.record(category: ApiCallCategory.tool, method: 'GET', endpoint: uri.host, source: 'web_fetch', statusCode: streamedResponse.statusCode);
         response = await http.Response.fromStream(streamedResponse);
 
         // Detect cross-host redirects manually to report to the Agent

@@ -1,12 +1,6 @@
-import 'dart:async';
-import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:apex_lite/core/domain/entities/message.dart';
-import 'package:apex_lite/core/domain/entities/inference_event.dart';
-import 'package:apex_lite/core/domain/entities/protocol_mode.dart';
 import 'package:apex_lite/core/infrastructure/services/apex_streaming_thought_scrubber.dart';
 import 'package:apex_lite/cli/services/provider_health_registry.dart';
-import 'package:apex_lite/core/infrastructure/heartbeat/history_compactor.dart';
 
 void main() {
   group('ApexStreamingThoughtScrubber - Stateful Split Tag Scrubbing', () {

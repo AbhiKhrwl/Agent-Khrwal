@@ -1,4 +1,4 @@
-/// ⟨K⟩ SwitchProvidersCommand — Instantly switch primary provider from configured pool
+/// ⟨K⟩ SwitchProvidersCommand — Premium double-bordered instant provider switch
 library;
 
 import 'dart:async';
@@ -54,17 +54,17 @@ class SwitchProvidersCommand extends InteractiveCommand {
       stdout.write(ChromeAura.clearScreen);
       stdout.write(ChromeAura.cursorHome);
 
-      stdout.writeln('${ChromeAura.chrome}┌${ChromeAura.hLine * (w - 2)}┐${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.bold} ⟨K⟩ INSTANT PROVIDER SWITCH ${' ' * (w - 30)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist} Use ↑/↓ to navigate, Enter to select & promote to primary.         ${' ' * (w - 68)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist} Press [q] or [Esc] to cancel. No network calls are made.           ${' ' * (w - 68)}${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╔${ChromeAura.heavyH * (w - 2)}╗${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}║${ChromeAura.bold} ⟨K⟩ INSTANT PROVIDER SWITCH ${' ' * (w - 32)}${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╠${ChromeAura.heavyH * (w - 2)}╣${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}║${ChromeAura.mist} Use ↑/↓ to navigate, Enter to select & promote to primary.         ${' ' * (w - 70)}${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}║${ChromeAura.mist} Press [q] or [Esc] to cancel. No network calls are made.           ${' ' * (w - 70)}${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╠${ChromeAura.heavyH * (w - 2)}╣${ChromeAura.reset}');
 
       for (int i = 0; i < viewportSize; i++) {
         final optionIdx = scrollOffset + i;
         if (optionIdx >= pool.length) {
-          stdout.writeln('${ChromeAura.chrome}│${' ' * (w - 2)}${ChromeAura.chrome}│${ChromeAura.reset}');
+          stdout.writeln('${ChromeAura.chrome}║${' ' * (w - 2)}${ChromeAura.chrome}║${ChromeAura.reset}');
           continue;
         }
 
@@ -84,15 +84,15 @@ class SwitchProvidersCommand extends InteractiveCommand {
         }
 
         final coloredLine = '$bgStyle$style${lineText.padRight(w - 2)}${ChromeAura.reset}';
-        stdout.writeln('${ChromeAura.chrome}│$coloredLine${ChromeAura.chrome}│${ChromeAura.reset}');
+        stdout.writeln('${ChromeAura.chrome}║$coloredLine${ChromeAura.chrome}║${ChromeAura.reset}');
       }
 
-      stdout.writeln('${ChromeAura.chrome}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╠${ChromeAura.heavyH * (w - 2)}╣${ChromeAura.reset}');
       
       final rangeText = ' Showing ${scrollOffset + 1}-${(scrollOffset + viewportSize).clamp(1, pool.length)} of ${pool.length} providers ';
       final paddedRange = rangeText.padLeft((w - 2 + rangeText.length) ~/ 2).padRight(w - 2);
-      stdout.writeln('${ChromeAura.chrome}│${ChromeAura.mist}$paddedRange${ChromeAura.reset}${ChromeAura.chrome}│${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.chrome}└${ChromeAura.hLine * (w - 2)}┘${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}║${ChromeAura.mist}$paddedRange${ChromeAura.reset}${ChromeAura.chrome}║${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.chrome}╚${ChromeAura.heavyH * (w - 2)}╝${ChromeAura.reset}');
     }
 
     drawProvidersScreen();

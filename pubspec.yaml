@@ -51,6 +51,7 @@ dependencies:
   record: ^6.2.0
   share_plus: ^10.1.4
   archive: ^4.0.4
+  flutter_foreground_task: ^8.14.0
 
 dev_dependencies:
   flutter_test:

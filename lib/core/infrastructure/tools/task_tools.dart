@@ -5,7 +5,6 @@ import '../../domain/interfaces/i_tool.dart';
 import '../../domain/entities/tool_entities.dart';
 import '../services/id_service.dart';
 import '../security/path_jailer.dart';
-import '../services/subagent_supervisor.dart';
 import 'agent_tool.dart'; // To interface with active subagents registry
 
 /// Helper class for accessing shared task records in the sandbox.

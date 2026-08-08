@@ -4,7 +4,7 @@ import '../../domain/interfaces/i_tool.dart';
 import '../../domain/entities/tool_entities.dart';
 import '../services/apex_curator_engine.dart';
 
-/// Loads skill descriptions/instructions from .apex/skills/<skill_name>/SKILL.md or skills/<skill_name>/SKILL.md
+/// Loads skill descriptions/instructions from `.apex/skills/<skill_name>/SKILL.md` or `skills/<skill_name>/SKILL.md`
 class SkillTool implements ITool {
   final String sandboxRoot;
 

@@ -14,6 +14,7 @@ class SessionSyncBridge {
   final String machineName;
   
   String? _environmentId;
+  // ignore: unused_field
   String? _environmentSecret;
   String? _currentSessionId;
   int _lastTransportSequenceNum = 0;

@@ -243,7 +243,7 @@ class ScrollWeaver {
     final sb = StringBuffer();
 
     // 1. Top border
-    sb.write('  ' + ChromeAura.chrome + ChromeAura.cornerTL);
+    sb.write('  ${ChromeAura.chrome}${ChromeAura.cornerTL}');
     for (var col = 0; col < numCols; col++) {
       sb.write(ChromeAura.hLine * (allocatedWidths[col] + 2));
       if (col < numCols - 1) sb.write(ChromeAura.teeTop);
@@ -251,20 +251,20 @@ class ScrollWeaver {
     sb.writeln(ChromeAura.cornerTR + ChromeAura.reset);
 
     // 2. Header row
-    sb.write('  ' + ChromeAura.chrome + ChromeAura.vLine + ChromeAura.reset);
+    sb.write('  ${ChromeAura.chrome}${ChromeAura.vLine}${ChromeAura.reset}');
     for (var col = 0; col < numCols; col++) {
       var cellVal = headers[col];
       if (cellVal.length > allocatedWidths[col]) {
-        cellVal = cellVal.substring(0, max(1, allocatedWidths[col] - 1)) + '…';
+        cellVal = '${cellVal.substring(0, max(1, allocatedWidths[col] - 1))}…';
       }
-      final padded = ' ' + cellVal.padRight(allocatedWidths[col]) + ' ';
+      final padded = ' ${cellVal.padRight(allocatedWidths[col])} ';
       sb.write(ChromeAura.engrave(padded, ChromeAura.chrome));
       sb.write(ChromeAura.chrome + ChromeAura.vLine + ChromeAura.reset);
     }
     sb.writeln();
 
     // 3. Divider row
-    sb.write('  ' + ChromeAura.chrome + ChromeAura.teeLeft);
+    sb.write('  ${ChromeAura.chrome}${ChromeAura.teeLeft}');
     for (var col = 0; col < numCols; col++) {
       sb.write(ChromeAura.hLine * (allocatedWidths[col] + 2));
       if (col < numCols - 1) sb.write(ChromeAura.cross);
@@ -273,13 +273,13 @@ class ScrollWeaver {
 
     // 4. Data rows
     for (final row in rows) {
-      sb.write('  ' + ChromeAura.chrome + ChromeAura.vLine + ChromeAura.reset);
+      sb.write('  ${ChromeAura.chrome}${ChromeAura.vLine}${ChromeAura.reset}');
       for (var col = 0; col < numCols; col++) {
         var cellVal = col < row.length ? row[col] : '';
         if (cellVal.length > allocatedWidths[col]) {
-          cellVal = cellVal.substring(0, max(1, allocatedWidths[col] - 1)) + '…';
+          cellVal = '${cellVal.substring(0, max(1, allocatedWidths[col] - 1))}…';
         }
-        final padded = ' ' + cellVal.padRight(allocatedWidths[col]) + ' ';
+        final padded = ' ${cellVal.padRight(allocatedWidths[col])} ';
         sb.write(ChromeAura.paint(padded, ChromeAura.oracle));
         sb.write(ChromeAura.chrome + ChromeAura.vLine + ChromeAura.reset);
       }
@@ -287,7 +287,7 @@ class ScrollWeaver {
     }
 
     // 5. Bottom border
-    sb.write('  ' + ChromeAura.chrome + ChromeAura.cornerBL);
+    sb.write('  ${ChromeAura.chrome}${ChromeAura.cornerBL}');
     for (var col = 0; col < numCols; col++) {
       sb.write(ChromeAura.hLine * (allocatedWidths[col] + 2));
       if (col < numCols - 1) sb.write(ChromeAura.teeBottom);

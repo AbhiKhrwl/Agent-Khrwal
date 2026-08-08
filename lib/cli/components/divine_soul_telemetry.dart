@@ -9,8 +9,10 @@ import 'dart:io';
 import 'dart:math';
 import '../theme/chrome_aura.dart';
 import '../renderer/viewport_sentry.dart';
+import '../services/api_call_radar.dart';
 import '../terminal_forge.dart' show VimMode;
 import 'tool_chrome.dart';
+import 'package:apex_lite/core/infrastructure/tools/agent_tool.dart';
 
 class ToolExecution {
   final String name;
@@ -247,6 +249,182 @@ class DivineSoulTelemetry {
       '$themeAura${ChromeAura.vLine}$reset${ChromeAura.mist}${ChromeAura.hLine * (w - 2)}$reset$themeAura${ChromeAura.vLine}$reset'
     );
 
+    // Section: Swarm Agents Telemetry (Supreme Edition)
+    final allSwarm = SubAgentRegistry.activeAgents.values.toList();
+    final activeSwarm = allSwarm
+        .where((a) => a['status'] == 'in_progress' || a['status'] == 'todo')
+        .toList();
+    final recentDone = allSwarm
+        .where((a) => a['status'] == 'completed' || a['status'] == 'stopped')
+        .toList();
+
+    if (allSwarm.isNotEmpty) {
+      // ── Header with live count ──
+      final activeLabel = activeSwarm.isNotEmpty
+          ? '${ChromeAura.sanctum}${activeSwarm.length} LIVE$reset'
+          : '${ChromeAura.mist}0 LIVE$reset';
+      final doneLabel = recentDone.isNotEmpty
+          ? ' ${ChromeAura.mist}${recentDone.length}✓$reset'
+          : '';
+      final swarmTitle = 'SWARM [$activeLabel$doneLabel${ChromeAura.bold}${ChromeAura.chrome}]$reset';
+      lines.add(
+        '$themeAura${ChromeAura.vLine}$reset ${ChromeAura.bold}${ChromeAura.chrome}$swarmTitle'
+        '${' ' * (w - _visibleLength(' SWARM [${activeSwarm.length} LIVE ${recentDone.length}✓]') - 2).clamp(0, 200)}$themeAura${ChromeAura.vLine}$reset'
+      );
+
+      // ── Active Agents (max 4) ──
+      for (final agent in activeSwarm.take(4)) {
+        final agentName = agent['name']?.toString() ?? 'sub-agent';
+        final agentType = agent['subagent_type']?.toString() ?? '';
+        final status = agent['status']?.toString() ?? '';
+        final agentId = agent['agentId']?.toString() ?? '';
+
+        // Status icon with animation
+        String statusIcon;
+        String statusColor;
+        if (status == 'in_progress') {
+          final spinGlyphs = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+          statusIcon = spinGlyphs[_pulseTick % spinGlyphs.length];
+          statusColor = ChromeAura.trident;
+        } else {
+          statusIcon = '◦';
+          statusColor = ChromeAura.mist;
+        }
+
+        // Elapsed time calculation
+        String timeStr = '';
+        double elapsedFraction = 0.0;
+        final createdAtStr = agent['created_at']?.toString();
+        final timeoutSecs = agent['timeout_seconds'] as int? ?? 180;
+        if (createdAtStr != null) {
+          final createdAt = DateTime.tryParse(createdAtStr);
+          if (createdAt != null) {
+            final diff = DateTime.now().difference(createdAt);
+            if (diff.inMinutes > 0) {
+              timeStr = '${diff.inMinutes}m${diff.inSeconds % 60}s';
+            } else {
+              timeStr = '${diff.inSeconds}s';
+            }
+            elapsedFraction = (diff.inSeconds / timeoutSecs).clamp(0.0, 1.0);
+          }
+        }
+
+        // Type badge (compact)
+        final typeBadge = agentType.isNotEmpty
+            ? '${ChromeAura.mist}[$agentType]$reset'
+            : '';
+
+        // Row 1: Name + type + elapsed
+        final nameDisplay = agentName.length > w - 20
+            ? '${agentName.substring(0, w - 23)}...'
+            : agentName;
+        final row1Time = '${ChromeAura.celestial}$timeStr$reset';
+        final row1Pad = w - _visibleLength(' $statusIcon $nameDisplay [$agentType]') - _visibleLength(timeStr) - 3;
+        lines.add(
+          '$themeAura${ChromeAura.vLine}$reset $statusColor$statusIcon$reset '
+          '${ChromeAura.oracle}$nameDisplay$reset $typeBadge'
+          '${' ' * row1Pad.clamp(0, 200)}$row1Time $themeAura${ChromeAura.vLine}$reset'
+        );
+
+        // Row 2: Mini timeout progress bar + live activity
+        final supervisor = AgentTool.supervisors[agentId];
+        String activityText = '';
+        if (supervisor != null && supervisor.progress.recentActivities.isNotEmpty) {
+          final lastAct = supervisor.progress.recentActivities.last;
+          final toolShort = lastAct.toolName.length > 12
+              ? '${lastAct.toolName.substring(0, 12)}..'
+              : lastAct.toolName;
+          activityText = '⚡$toolShort';
+        } else {
+          activityText = '…initializing';
+        }
+
+        // Timeout bar (compact 8-wide)
+        String timeoutColor;
+        if (elapsedFraction >= 0.85) {
+          timeoutColor = ChromeAura.wrath;
+        } else if (elapsedFraction >= 0.60) {
+          timeoutColor = ChromeAura.celestial;
+        } else {
+          timeoutColor = ChromeAura.sanctum;
+        }
+        final barWidth = 8;
+        final filled = (elapsedFraction * barWidth).round().clamp(0, barWidth);
+        final empty = barWidth - filled;
+        final timeoutBar = '${ChromeAura.mist}[$reset'
+            '$timeoutColor${ChromeAura.block * filled}$reset'
+            '${ChromeAura.mist}${ChromeAura.dimBlock * empty}$reset'
+            '${ChromeAura.mist}]$reset';
+
+        // Token count from supervisor
+        String tokenStr = '';
+        if (supervisor != null && supervisor.progress.totalTokens > 0) {
+          tokenStr = ' ${ChromeAura.mist}${supervisor.progress.totalTokens}tk$reset';
+        }
+
+        final actDisplay = activityText.length > w - 22
+            ? '${activityText.substring(0, w - 25)}...'
+            : activityText;
+        final row2Pad = w - _visibleLength('   [████████] $actDisplay ${supervisor?.progress.totalTokens ?? 0}tk') - 2;
+        lines.add(
+          '$themeAura${ChromeAura.vLine}$reset   $timeoutBar '
+          '${ChromeAura.mist}$actDisplay$reset'
+          '$tokenStr'
+          '${' ' * row2Pad.clamp(0, 200)}$themeAura${ChromeAura.vLine}$reset'
+        );
+      }
+
+      // ── Recently Completed/Stopped (max 2, compact single-line) ──
+      if (recentDone.isNotEmpty) {
+        lines.add(
+          '$themeAura${ChromeAura.vLine}$reset ${ChromeAura.mist}${ChromeAura.hLine * 3} done ${ChromeAura.hLine * (w - 10)}$reset$themeAura${ChromeAura.vLine}$reset'
+        );
+        for (final agent in recentDone.take(2)) {
+          final agentName = agent['name']?.toString() ?? 'sub-agent';
+          final status = agent['status']?.toString() ?? '';
+          final icon = status == 'completed' ? '${ChromeAura.sanctum}✓$reset' : '${ChromeAura.wrath}✗$reset';
+          final nameShort = agentName.length > w - 10
+              ? '${agentName.substring(0, w - 13)}...'
+              : agentName;
+          final row = '$icon $nameShort';
+          lines.add(
+            '$themeAura${ChromeAura.vLine}$reset  $row'
+            '${' ' * (w - _visibleLength('  ${status == 'completed' ? '✓' : '✗'} $nameShort') - 2).clamp(0, 200)}$themeAura${ChromeAura.vLine}$reset'
+          );
+        }
+      }
+
+      // ── Swarm Metrics Summary Row ──
+      int totalSwarmTokens = 0;
+      for (final agent in allSwarm) {
+        final id = agent['agentId']?.toString() ?? '';
+        final sup = AgentTool.supervisors[id];
+        if (sup != null) {
+          totalSwarmTokens += sup.progress.totalTokens;
+        }
+      }
+      if (totalSwarmTokens > 0) {
+        final metricsText = '💰${totalSwarmTokens}tk total';
+        lines.add(
+          '$themeAura${ChromeAura.vLine}$reset  ${ChromeAura.mist}$metricsText$reset'
+          '${' ' * (w - _visibleLength('  $metricsText') - 2).clamp(0, 200)}$themeAura${ChromeAura.vLine}$reset'
+        );
+      }
+
+      // ── Kill hint (only when agents are active) ──
+      if (activeSwarm.isNotEmpty) {
+        final hintText = '${ChromeAura.dim}${ChromeAura.mist}!kill <id> to abort$reset';
+        lines.add(
+          '$themeAura${ChromeAura.vLine}$reset  $hintText'
+          '${' ' * (w - _visibleLength('  !kill <id> to abort') - 2).clamp(0, 200)}$themeAura${ChromeAura.vLine}$reset'
+        );
+      }
+
+      lines.add(
+        '$themeAura${ChromeAura.vLine}$reset${ChromeAura.mist}${ChromeAura.hLine * (w - 2)}$reset$themeAura${ChromeAura.vLine}$reset'
+      );
+    }
+
     // Section 2: Resource Gauges (CPU & MEMORY)
     lines.add(
       '$themeAura${ChromeAura.vLine}$reset ${ChromeAura.bold}${ChromeAura.chrome}RESOURCES$reset'
@@ -346,7 +524,7 @@ class DivineSoulTelemetry {
       for (final run in _toolHistory) {
         final statusGlyph = run.isError ? '✗' : '✓';
         final statusAura = run.isError ? ChromeAura.wrath : ChromeAura.sanctum;
-        final nameStr = run.name.length > w - 16 ? run.name.substring(0, w - 19) + '...' : run.name;
+        final nameStr = run.name.length > w - 16 ? '${run.name.substring(0, w - 19)}...' : run.name;
         final durStr = '${run.duration.toStringAsFixed(1)}s';
         lines.add(
           '$themeAura${ChromeAura.vLine}$reset  $statusAura$statusGlyph$reset ${ChromeAura.oracle}$nameStr$reset'
@@ -414,6 +592,53 @@ class DivineSoulTelemetry {
       '$themeAura${ChromeAura.vLine}$reset  ${ChromeAura.mist}Threat:$reset '
       '$threatAura$threatLevel$reset'
       '${' ' * (w - _visibleLength('  Threat: $threatLevel') - 2)}$themeAura${ChromeAura.vLine}$reset'
+    );
+
+    // ── Section 7: API RADAR — Network Activity Monitor ──
+    final radar = ApiCallRadar.instance;
+    lines.add(
+      '$themeAura${ChromeAura.vLine}$reset${ChromeAura.mist}${ChromeAura.hLine * (w - 2)}$reset$themeAura${ChromeAura.vLine}$reset'
+    );
+    lines.add(
+      '$themeAura${ChromeAura.vLine}$reset ${ChromeAura.bold}${ChromeAura.chrome}API RADAR$reset'
+      '${' ' * (w - 12)}$themeAura${ChromeAura.vLine}$reset'
+    );
+
+    final infCount = '${radar.inferenceCalls}';
+    lines.add(
+      '$themeAura${ChromeAura.vLine}$reset  ${ChromeAura.trident}🔮 Inference:$reset '
+      '${ChromeAura.bold}${ChromeAura.celestial}$infCount calls$reset'
+      '${' ' * (w - _visibleLength('  🔮 Inference: $infCount calls') - 2)}$themeAura${ChromeAura.vLine}$reset'
+    );
+
+    final totalStr = '${radar.totalCalls}';
+    lines.add(
+      '$themeAura${ChromeAura.vLine}$reset  ${ChromeAura.mist}Total Calls:$reset '
+      '${ChromeAura.oracle}$totalStr$reset'
+      '${' ' * (w - _visibleLength('  Total Calls: $totalStr') - 2)}$themeAura${ChromeAura.vLine}$reset'
+    );
+
+    final rateStr = '${radar.callsPerMinute.toStringAsFixed(1)}/min';
+    lines.add(
+      '$themeAura${ChromeAura.vLine}$reset  ${ChromeAura.mist}Rate Speed:$reset '
+      '${ChromeAura.oracle}$rateStr$reset'
+      '${' ' * (w - _visibleLength('  Rate Speed: $rateStr') - 2)}$themeAura${ChromeAura.vLine}$reset'
+    );
+
+    final modStr = '📋${radar.modelFetchCalls}';
+    final tlStr = '🔍${radar.toolCalls}';
+    final radarLine1 = '  $modStr  $tlStr';
+    lines.add(
+      '$themeAura${ChromeAura.vLine}$reset ${ChromeAura.mist}$radarLine1$reset'
+      '${' ' * (w - _visibleLength(' $radarLine1') - 2)}$themeAura${ChromeAura.vLine}$reset'
+    );
+
+    final phantomCount = radar.phantomCalls;
+    final phantomAura = phantomCount > 0 ? ChromeAura.wrath : ChromeAura.sanctum;
+    final phantomLabel = phantomCount > 0 ? '👻$phantomCount ← ALERT!' : '👻0 clean';
+    lines.add(
+      '$themeAura${ChromeAura.vLine}$reset  $phantomAura$phantomLabel$reset'
+      '${' ' * (w - _visibleLength('  $phantomLabel') - 2)}$themeAura${ChromeAura.vLine}$reset'
     );
 
     // Fill remaining space with empty lines

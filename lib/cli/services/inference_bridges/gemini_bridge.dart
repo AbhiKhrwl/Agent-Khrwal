@@ -7,6 +7,7 @@ import 'package:apex_lite/core/domain/entities/message.dart';
 import 'package:apex_lite/core/domain/entities/inference_event.dart';
 import 'package:apex_lite/core/domain/interfaces/i_tool.dart';
 import 'package:apex_lite/core/infrastructure/prompts/prompt_cache_optimizer.dart';
+import 'package:apex_lite/cli/services/api_call_radar.dart';
 
 /// 🔱 Helper to convert nested parameters schema to expected model API format
 Map<String, dynamic> convertSchema(Map<String, dynamic> schema) {
@@ -189,6 +190,7 @@ Future<Stream<InferenceEvent>> callDirectGeminiModel(
 
       try {
         final currentResponse = await currentClient.send(request);
+        ApiCallRadar.instance.record(category: ApiCallCategory.inference, method: 'POST', endpoint: 'gemini', source: 'gemini_bridge', statusCode: currentResponse.statusCode);
 
         if (currentResponse.statusCode == 404 || currentResponse.statusCode == 400) {
           final errBody = await currentResponse.stream.transform(utf8.decoder).join();
@@ -262,7 +264,7 @@ Future<Stream<InferenceEvent>> callDirectGeminiModel(
     var inString = false;
     var escaped = false;
 
-    response.stream
+    final subscription = response.stream
         .transform(utf8.decoder)
         .listen(
           (chunk) {
@@ -367,6 +369,11 @@ Future<Stream<InferenceEvent>> callDirectGeminiModel(
             client?.close();
           },
         );
+
+    controller.onCancel = () {
+      subscription.cancel();
+      client?.close();
+    };
   } catch (e) {
     controller.add(FatalErrorEvent('Gemini connection failed: $e'));
     controller.close();

@@ -4,7 +4,7 @@ import '../apex_command.dart';
 import 'package:apex_lite/cli/theme/chrome_aura.dart';
 import 'package:apex_lite/core/infrastructure/tools/file_edit_tool.dart';
 
-/// ⟨K⟩ UndoCommand — Reverts uncommitted files via local backups or Git checkouts
+/// ⟨K⟩ UndoCommand — Premium double-bordered revert & rollback dashboard
 class UndoCommand extends LocalCommand {
   UndoCommand() : super(
     name: 'undo',
@@ -23,7 +23,6 @@ class UndoCommand extends LocalCommand {
     final sandboxRoot = forge.sandboxPath as String? ?? './apex_sandbox';
     final width = forge.logWidth ?? 70;
     final innerWidth = width - 4;
-    final borderColor = ChromeAura.chrome;
 
     final targetArg = arguments.trim();
 
@@ -81,18 +80,20 @@ class UndoCommand extends LocalCommand {
       return TextResult('  ${ChromeAura.wrath}✗ Error: Neither backup snapshot nor modified file matches "$targetArg".${ChromeAura.reset}');
     }
 
-    // Case B: No argument provided — offer default rollback list / visual panel
+    // Case B: No argument provided — visual revert dashboard
     final buffer = StringBuffer();
-    buffer.writeln('  $borderColor┌${ChromeAura.hLine * innerWidth}┐${ChromeAura.reset}');
-    final title = ' ⟨K⟩ WORKSPACE REVERT & UNDO DASHBOARD';
-    buffer.writeln('  $borderColor│${ChromeAura.bold}${ChromeAura.trident}$title${' ' * (innerWidth - _visibleLength(title))}${ChromeAura.reset}$borderColor│${ChromeAura.reset}');
-    buffer.writeln('  $borderColor├${ChromeAura.hLine * innerWidth}┤${ChromeAura.reset}');
 
-    // 1. Render Local Sandbox Backups
-    buffer.writeln('  $borderColor│${ChromeAura.oracle} LOCAL BACKUP SNAPSHOTS (.apex_rollback/)${' ' * (innerWidth - 41)}$borderColor│${ChromeAura.reset}');
+    // ═══ Top border ═══
+    final title = ' 🔱 WORKSPACE REVERT & UNDO DASHBOARD ';
+    final titleLeft = (innerWidth - title.length) ~/ 2;
+    final titleRight = innerWidth - title.length - titleLeft;
+    buffer.writeln('  ${ChromeAura.chrome}╔${ChromeAura.heavyH * titleLeft}$title${ChromeAura.heavyH * titleRight}╗${ChromeAura.reset}');
+
+    // ─── LOCAL BACKUPS ───
+    _writeHeader(buffer, 'LOCAL BACKUP SNAPSHOTS (.apex_rollback/)', innerWidth);
+
     if (index.isEmpty) {
-      final line = '   No local backup snapshots found in rollback registry.';
-      buffer.writeln('  $borderColor│$line${' ' * (innerWidth - _visibleLength(line))}$borderColor│${ChromeAura.reset}');
+      _writeRow(buffer, '${ChromeAura.mist}No local backup snapshots found in rollback registry.${ChromeAura.reset}', innerWidth);
     } else {
       // Sort backups by timestamp descending
       final sortedKeys = index.keys.toList()
@@ -107,39 +108,39 @@ class UndoCommand extends LocalCommand {
         final meta = index[key]!;
         final file = meta['filePath'] ?? 'unknown';
         final desc = meta['description'] ?? 'File modification';
-        final line = '   • [$key] $file';
-        final details = '     $desc';
-        buffer.writeln('  $borderColor│$line${' ' * (innerWidth - _visibleLength(line))}$borderColor│${ChromeAura.reset}');
-        buffer.writeln('  $borderColor│${ChromeAura.mist}$details${' ' * (innerWidth - _visibleLength(details))}${ChromeAura.reset}$borderColor│${ChromeAura.reset}');
+
+        final idStr = '${ChromeAura.phantom}$key${ChromeAura.reset}';
+        final fileStr = '${ChromeAura.oracle}$file${ChromeAura.reset}';
+        final line = ' • $idStr ${ChromeAura.mist}→${ChromeAura.reset} $fileStr';
+        _writeRow(buffer, line, innerWidth);
+
+        final detailLine = '     ${ChromeAura.mist}$desc${ChromeAura.reset}';
+        _writeRow(buffer, detailLine, innerWidth);
       }
     }
 
-    buffer.writeln('  $borderColor├${ChromeAura.hLine * innerWidth}┤${ChromeAura.reset}');
+    // ─── GIT CHANGES ───
+    _writeHeader(buffer, 'UNCOMMITTED GIT CHANGES', innerWidth);
 
-    // 2. Render Git Uncommitted Modifications
-    buffer.writeln('  $borderColor│${ChromeAura.oracle} UNCOMMITTED GIT CHANGES${' ' * (innerWidth - 26)}$borderColor│${ChromeAura.reset}');
     if (!isGit) {
-      final line = '   Git integration inactive (working directory not a git repo).';
-      buffer.writeln('  $borderColor│${ChromeAura.mist}$line${' ' * (innerWidth - _visibleLength(line))}${ChromeAura.reset}$borderColor│${ChromeAura.reset}');
+      _writeRow(buffer, '${ChromeAura.mist}Git integration inactive (not a git repo).${ChromeAura.reset}', innerWidth);
     } else if (gitFiles.isEmpty) {
-      final line = '   Workspace is clean. No uncommitted modifications detected.';
-      buffer.writeln('  $borderColor│$line${' ' * (innerWidth - _visibleLength(line))}$borderColor│${ChromeAura.reset}');
+      _writeRow(buffer, '${ChromeAura.sanctum}✓ Workspace clean. No uncommitted modifications.${ChromeAura.reset}', innerWidth);
     } else {
       for (var idx = 0; idx < gitFiles.length && idx < 5; idx++) {
         final file = gitFiles[idx];
-        final line = '   ⚡ [Git] $file';
-        buffer.writeln('  $borderColor│$line${' ' * (innerWidth - _visibleLength(line))}$borderColor│${ChromeAura.reset}');
+        final line = ' ${ChromeAura.celestial}⚡${ChromeAura.reset} ${ChromeAura.mist}[Git]${ChromeAura.reset} ${ChromeAura.oracle}$file${ChromeAura.reset}';
+        _writeRow(buffer, line, innerWidth);
       }
       if (gitFiles.length > 5) {
         final remaining = gitFiles.length - 5;
-        final line = '   ... and $remaining more modified files.';
-        buffer.writeln('  $borderColor│${ChromeAura.mist}$line${' ' * (innerWidth - _visibleLength(line))}${ChromeAura.reset}$borderColor│${ChromeAura.reset}');
+        _writeRow(buffer, '${ChromeAura.mist}   ... and $remaining more modified files.${ChromeAura.reset}', innerWidth);
       }
     }
 
-    buffer.writeln('  $borderColor├${ChromeAura.hLine * innerWidth}┤${ChromeAura.reset}');
+    // ─── QUICK HINT ───
+    _writeHeader(buffer, 'QUICK ACTION', innerWidth);
 
-    // 3. Render quick rollback hint
     String hintText = '';
     if (index.isNotEmpty) {
       final sortedKeys = index.keys.toList()
@@ -150,16 +151,20 @@ class UndoCommand extends LocalCommand {
         });
       final latestId = sortedKeys.first;
       final file = index[latestId]!['filePath'];
-      hintText = '  Run `/undo $latestId` to revert "$file" to its backup state.';
+      hintText = '${ChromeAura.sanctum}▶${ChromeAura.reset} ${ChromeAura.trident}/undo $latestId${ChromeAura.reset} ${ChromeAura.mist}to revert "$file"${ChromeAura.reset}';
     } else if (gitFiles.isNotEmpty) {
       final latestGit = gitFiles.first;
-      hintText = '  Run `/undo $latestGit` to revert "$latestGit" via Git checkout.';
+      hintText = '${ChromeAura.sanctum}▶${ChromeAura.reset} ${ChromeAura.trident}/undo $latestGit${ChromeAura.reset} ${ChromeAura.mist}to revert via Git${ChromeAura.reset}';
     } else {
-      hintText = '  No modifications detected to revert.';
+      hintText = '${ChromeAura.mist}No modifications detected to revert.${ChromeAura.reset}';
     }
+    _writeRow(buffer, hintText, innerWidth);
 
-    buffer.writeln('  $borderColor│${ChromeAura.sanctum}$hintText${' ' * (innerWidth - _visibleLength(hintText))}${ChromeAura.reset}$borderColor│${ChromeAura.reset}');
-    buffer.writeln('  $borderColor└${ChromeAura.hLine * innerWidth}┘${ChromeAura.reset}');
+    // ═══ Bottom border ═══
+    final tip = ' ⟨K⟩ /undo <id|file> to revert ';
+    final tipLeft = (innerWidth - tip.length) ~/ 2;
+    final tipRight = innerWidth - tip.length - tipLeft;
+    buffer.write('  ${ChromeAura.chrome}╚${ChromeAura.hLine * tipLeft.clamp(0, 500)}$tip${ChromeAura.hLine * tipRight.clamp(0, 500)}╝${ChromeAura.reset}');
 
     return TextResult(buffer.toString());
   }
@@ -199,12 +204,20 @@ class UndoCommand extends LocalCommand {
       } catch (_) {}
 
       final buffer = StringBuffer();
-      buffer.writeln('  ${ChromeAura.sanctum}┌${ChromeAura.hLine * innerWidth}┐${ChromeAura.reset}');
-      final msg = ' ✓ ROLLBACK SUCCESSFUL!';
-      buffer.writeln('  ${ChromeAura.sanctum}│${ChromeAura.bold}$msg${' ' * (innerWidth - _visibleLength(msg))}${ChromeAura.reset}${ChromeAura.sanctum}│${ChromeAura.reset}');
-      final details = '  Reverted "$relativePath" using backup "$backupId".';
-      buffer.writeln('  ${ChromeAura.sanctum}│$details${' ' * (innerWidth - _visibleLength(details))}${ChromeAura.sanctum}│${ChromeAura.reset}');
-      buffer.writeln('  ${ChromeAura.sanctum}└${ChromeAura.hLine * innerWidth}┘${ChromeAura.reset}');
+      final title = ' 🔱 ROLLBACK SUCCESSFUL ';
+      final titleLeft = (innerWidth - title.length) ~/ 2;
+      final titleRight = innerWidth - title.length - titleLeft;
+      buffer.writeln('  ${ChromeAura.sanctum}╔${ChromeAura.heavyH * titleLeft}$title${ChromeAura.heavyH * titleRight}╗${ChromeAura.reset}');
+
+      final line = '${ChromeAura.sanctum}✓${ChromeAura.reset} Reverted "${ChromeAura.oracle}$relativePath${ChromeAura.reset}" from backup ${ChromeAura.phantom}$backupId${ChromeAura.reset}';
+      final pad = innerWidth - _visibleLength(line) - 2;
+      buffer.writeln('  ${ChromeAura.sanctum}║${ChromeAura.reset} $line${' ' * pad.clamp(0, 500)} ${ChromeAura.sanctum}║${ChromeAura.reset}');
+
+      final tip = ' ⟨K⟩ File restored ';
+      final tipLeft = (innerWidth - tip.length) ~/ 2;
+      final tipRight = innerWidth - tip.length - tipLeft;
+      buffer.write('  ${ChromeAura.sanctum}╚${ChromeAura.hLine * tipLeft.clamp(0, 500)}$tip${ChromeAura.hLine * tipRight.clamp(0, 500)}╝${ChromeAura.reset}');
+
       return TextResult(buffer.toString());
     } catch (e) {
       return TextResult('  ${ChromeAura.wrath}✗ Rollback failed: $e${ChromeAura.reset}');
@@ -233,12 +246,20 @@ class UndoCommand extends LocalCommand {
 
       if (checkoutResult.exitCode == 0 && resetResult.exitCode == 0) {
         final buffer = StringBuffer();
-        buffer.writeln('  ${ChromeAura.sanctum}┌${ChromeAura.hLine * innerWidth}┐${ChromeAura.reset}');
-        final msg = ' ✓ GIT REVERT SUCCESSFUL!';
-        buffer.writeln('  ${ChromeAura.sanctum}│${ChromeAura.bold}$msg${' ' * (innerWidth - _visibleLength(msg))}${ChromeAura.reset}${ChromeAura.sanctum}│${ChromeAura.reset}');
-        final details = '  Reverted modifications in "$fileRelativePath" via Git checkout.';
-        buffer.writeln('  ${ChromeAura.sanctum}│$details${' ' * (innerWidth - _visibleLength(details))}${ChromeAura.sanctum}│${ChromeAura.reset}');
-        buffer.writeln('  ${ChromeAura.sanctum}└${ChromeAura.hLine * innerWidth}┘${ChromeAura.reset}');
+        final title = ' 🔱 GIT REVERT SUCCESSFUL ';
+        final titleLeft = (innerWidth - title.length) ~/ 2;
+        final titleRight = innerWidth - title.length - titleLeft;
+        buffer.writeln('  ${ChromeAura.sanctum}╔${ChromeAura.heavyH * titleLeft}$title${ChromeAura.heavyH * titleRight}╗${ChromeAura.reset}');
+
+        final line = '${ChromeAura.sanctum}✓${ChromeAura.reset} Reverted "${ChromeAura.oracle}$fileRelativePath${ChromeAura.reset}" via Git checkout';
+        final pad = innerWidth - _visibleLength(line) - 2;
+        buffer.writeln('  ${ChromeAura.sanctum}║${ChromeAura.reset} $line${' ' * pad.clamp(0, 500)} ${ChromeAura.sanctum}║${ChromeAura.reset}');
+
+        final tip = ' ⟨K⟩ Git state restored ';
+        final tipLeft = (innerWidth - tip.length) ~/ 2;
+        final tipRight = innerWidth - tip.length - tipLeft;
+        buffer.write('  ${ChromeAura.sanctum}╚${ChromeAura.hLine * tipLeft.clamp(0, 500)}$tip${ChromeAura.hLine * tipRight.clamp(0, 500)}╝${ChromeAura.reset}');
+
         return TextResult(buffer.toString());
       } else {
         return TextResult('  ${ChromeAura.wrath}✗ Git checkout/reset failed with exit code.${ChromeAura.reset}');
@@ -248,7 +269,33 @@ class UndoCommand extends LocalCommand {
     }
   }
 
+  void _writeHeader(StringBuffer buffer, String title, int innerWidth) {
+    final titleStr = '── $title ';
+    final pad = innerWidth - titleStr.length;
+    buffer.writeln('  ${ChromeAura.chrome}├$titleStr${ChromeAura.hLine * pad.clamp(0, 500)}┤${ChromeAura.reset}');
+  }
+
+  void _writeRow(StringBuffer buffer, String content, int innerWidth) {
+    final pad = innerWidth - _visibleLength(content) - 2;
+    buffer.writeln('  ${ChromeAura.chrome}║${ChromeAura.reset} $content${' ' * pad.clamp(0, 500)} ${ChromeAura.chrome}║${ChromeAura.reset}');
+  }
+
   int _visibleLength(String text) {
-    return text.replaceAll(RegExp(r'\x1b\[[0-9;]*[a-zA-Z]'), '').length;
+    final clean = text.replaceAll(RegExp(r'\x1b\[[0-9;]*[a-zA-Z]'), '');
+    var width = 0;
+    for (final rune in clean.runes) {
+      if ((rune >= 0x4e00 && rune <= 0x9fff) ||
+          (rune >= 0x3400 && rune <= 0x4dbf) ||
+          (rune >= 0xf900 && rune <= 0xfaff)) {
+        width += 2;
+      } else if (rune >= 0x1f000 && rune <= 0x1faff) {
+        width += 2;
+      } else if (rune >= 0x2600 && rune <= 0x27bf) {
+        width += 2;
+      } else {
+        width += 1;
+      }
+    }
+    return width;
   }
 }

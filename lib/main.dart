@@ -8,39 +8,16 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:apex_lite/core/infrastructure/heartbeat/aether_core.dart';
 import 'package:apex_lite/core/infrastructure/handshake/cipher_protocol.dart';
 import 'package:apex_lite/core/infrastructure/router/agent_router.dart';
+import 'package:apex_lite/core/infrastructure/router/tool_registry.dart';
 import 'package:apex_lite/core/infrastructure/security/sentry_purity.dart';
 import 'package:apex_lite/core/infrastructure/tools/spectral_ops.dart';
-import 'package:apex_lite/core/infrastructure/tools/bash_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/directory_briefing_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/file_read_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/file_write_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/notification_agent_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/data_injector_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/voice_munshi_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/file_edit_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/glob_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/grep_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/web_search_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/web_fetch_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/agent_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/todo_write_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/task_tools.dart';
-import 'package:apex_lite/core/infrastructure/tools/send_message_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/brief_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/plan_mode_tools.dart';
-import 'package:apex_lite/core/infrastructure/tools/ask_user_question_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/mcp_tools.dart';
-import 'package:apex_lite/core/infrastructure/tools/worktree_tools.dart';
 import 'package:apex_lite/core/infrastructure/tools/cron_tools.dart';
-import 'package:apex_lite/core/infrastructure/tools/team_tools.dart';
-import 'package:apex_lite/core/infrastructure/tools/notebook_edit_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/skill_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/lsp_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/config_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/sleep_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/tool_search_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/rollback_tool.dart';
 import 'package:apex_lite/core/infrastructure/services/local_inference_service.dart';
+import 'package:apex_lite/cli/services/config_manager.dart';
+import 'package:apex_lite/core/infrastructure/services/hybrid_inference_coordinator.dart';
+import 'package:apex_lite/core/infrastructure/services/plan_mode_coordinator.dart';
+import 'package:apex_lite/core/infrastructure/services/background_task_service.dart';
 import 'package:apex_lite/core/infrastructure/services/session_manager.dart';
 import 'package:apex_lite/core/infrastructure/services/secret_guard_service.dart';
 import 'package:apex_lite/core/domain/entities/message.dart';
@@ -49,8 +26,12 @@ import 'package:apex_lite/ui/faces/gajraj/gajraj_scaffold.dart';
 import 'package:apex_lite/ui/faces/model_picker_screen.dart';
 import 'package:apex_lite/ui/theme/divine_palette.dart';
 
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize Background Task Service configuration settings
+  await BackgroundTaskService.init();
 
   // Initialize FlutterGemma engine (required for Gemma 4)
   await gemma.FlutterGemma.initialize(
@@ -61,7 +42,9 @@ void main() async {
 
   // 1. Setup Sandbox
   final docsDir = await getApplicationDocumentsDirectory();
+  ConfigManager.customConfigDir = docsDir.path; // 🔱 MOBILE PATH OVERRIDE
   final sandboxPath = '${docsDir.path}/apex_sandbox';
+  PlanModeCoordinator.customSandboxDir = sandboxPath; // 🔱 MOBILE SANDBOX OVERRIDE
   final sandboxDir = Directory(sandboxPath);
   if (!await sandboxDir.exists()) {
     await sandboxDir.create(recursive: true);
@@ -94,60 +77,27 @@ void main() async {
   McpRegistry.init(sandboxPath);
   CronRegistry.init(spectral);
 
-  // 4. Register ALL Tools
-  router.registerTool(BashTool(spectral));
-  router.registerTool(DirectoryBriefingTool(sandboxPath));
-  router.registerTool(FileReadTool(sandboxPath));
-  router.registerTool(FileWriteTool(sandboxPath));
-  router.registerTool(DataInjectorTool(spectral));
-  router.registerTool(NotificationAgentTool());
-  router.registerTool(VoiceMunshiTool());
-  router.registerTool(FileEditTool(sandboxPath));
-  router.registerTool(GlobTool(sandboxPath));
-  router.registerTool(GrepTool(sandboxPath));
-  router.registerTool(WebSearchTool());
-  router.registerTool(WebFetchTool());
-  router.registerTool(AgentTool(sandboxPath));
-  router.registerTool(TodoWriteTool(sandboxPath));
-  router.registerTool(TaskCreateTool(sandboxPath));
-  router.registerTool(TaskGetTool(sandboxPath));
-  router.registerTool(TaskUpdateTool(sandboxPath));
-  router.registerTool(TaskListTool(sandboxPath));
-  router.registerTool(TaskStopTool(sandboxPath));
-  router.registerTool(TaskOutputTool(sandboxPath));
-  router.registerTool(SendMessageTool(sandboxPath));
-  router.registerTool(BriefTool());
-  router.registerTool(EnterPlanModeTool());
-  router.registerTool(ExitPlanModeTool());
-  router.registerTool(AskUserQuestionTool());
+  // 4. 🔱 Register ALL tools via centralized ToolRegistry (eliminates DRY violation)
+  ToolRegistry.registerAll(
+    router,
+    sandboxPath: sandboxPath,
+    spectral: spectral,
+    isCli: false,
+  );
 
-  // Registrations for the 10 missing tools from the APEX TOOL PROTOCOL (bringing total tools to 35+ core/utilities)
-  router.registerTool(ListMcpResourcesTool());
-  router.registerTool(ReadMcpResourceTool());
-  router.registerTool(EnterWorktreeTool(spectral));
-  router.registerTool(ExitWorktreeTool(spectral));
-  router.registerTool(ScheduleCronTool());
-  router.registerTool(CronCreateTool());
-  router.registerTool(CronDeleteTool());
-  router.registerTool(CronListTool());
-  router.registerTool(TeamCreateTool(sandboxPath));
-  router.registerTool(TeamDeleteTool(sandboxPath));
-  router.registerTool(TeamJoinTool(sandboxPath));
-  router.registerTool(NotebookEditTool(sandboxPath));
-  router.registerTool(SkillTool(sandboxPath));
-  router.registerTool(LSPTool(sandboxPath));
-  router.registerTool(ConfigTool(sandboxPath));
-  router.registerTool(SleepTool());
-  router.registerTool(ToolSearchTool(() => router.registeredTools));
-  router.registerTool(SpectralRollbackTool(sandboxPath));
 
   final core = AetherCore(router: router, protocol: protocol);
 
   final inference = LocalInferenceService();
+  final coordinator = HybridInferenceCoordinator(
+    localInference: inference,
+    core: core,
+  );
 
   runApp(ApexLiteApp(
     core: core,
     inference: inference,
+    coordinator: coordinator,
     sessionManager: sessionManager,
     sandboxPath: sandboxPath,
     spectralOps: spectral,
@@ -157,6 +107,7 @@ void main() async {
 class ApexLiteApp extends StatelessWidget {
   final AetherCore core;
   final LocalInferenceService inference;
+  final HybridInferenceCoordinator coordinator;
   final SessionManager sessionManager;
   final String sandboxPath;
   final SpectralOps spectralOps;
@@ -165,6 +116,7 @@ class ApexLiteApp extends StatelessWidget {
     super.key,
     required this.core,
     required this.inference,
+    required this.coordinator,
     required this.sessionManager,
     required this.sandboxPath,
     required this.spectralOps,
@@ -179,6 +131,7 @@ class ApexLiteApp extends StatelessWidget {
       home: BootSplash(
         core: core,
         inference: inference,
+        coordinator: coordinator,
         sessionManager: sessionManager,
         sandboxPath: sandboxPath,
         spectralOps: spectralOps,
@@ -191,6 +144,7 @@ class ApexLiteApp extends StatelessWidget {
 class BootSplash extends StatefulWidget {
   final AetherCore core;
   final LocalInferenceService inference;
+  final HybridInferenceCoordinator coordinator;
   final SessionManager sessionManager;
   final String sandboxPath;
   final SpectralOps spectralOps;
@@ -199,6 +153,7 @@ class BootSplash extends StatefulWidget {
     super.key,
     required this.core,
     required this.inference,
+    required this.coordinator,
     required this.sessionManager,
     required this.sandboxPath,
     required this.spectralOps,
@@ -220,11 +175,14 @@ class _BootSplashState extends State<BootSplash>
       vsync: this,
       duration: const Duration(seconds: 1),
     )..repeat(reverse: true);
-    requestStoragePermission();
     _initEngine();
   }
 
   Future<void> _initEngine() async {
+    // 🔱 Storage Permission Handshake
+    if (Platform.isAndroid) {
+      await requestStoragePermission();
+    }
     final ready = await widget.inference.initialize();
     if (mounted) {
       setState(() {
@@ -234,24 +192,30 @@ class _BootSplashState extends State<BootSplash>
       });
       await Future.delayed(const Duration(milliseconds: 800));
       if (mounted) {
-        Navigator.pushReplacement(
-          context,
-          PageRouteBuilder(
-            pageBuilder: (_, a1, a2) => ModelPickerScreen(
-              inference: widget.inference,
-              core: widget.core,
-              sessionManager: widget.sessionManager,
-              onModelReady: (ctx) => _goToChat(ctx),
+        final executionMode = ConfigManager.loadExecutionMode();
+        // 🔱 SMART ROUTING: If execution mode is Cloud, or if local model was successfully restored, go straight to chat
+        if (executionMode == ExecutionMode.cloud || widget.inference.state == ModelLoadState.ready) {
+          _goToChat(context);
+        } else {
+          Navigator.pushReplacement(
+            context,
+            PageRouteBuilder(
+              pageBuilder: (_, a1, a2) => ModelPickerScreen(
+                inference: widget.inference,
+                core: widget.core,
+                sessionManager: widget.sessionManager,
+                onModelReady: (ctx) => _goToChat(ctx),
+              ),
+              transitionDuration: const Duration(milliseconds: 500),
+              transitionsBuilder: (_, anim, a2, child) {
+                return FadeTransition(
+                  opacity: CurvedAnimation(parent: anim, curve: Curves.easeOut),
+                  child: child,
+                );
+              },
             ),
-            transitionDuration: const Duration(milliseconds: 500),
-            transitionsBuilder: (_, anim, a2, child) {
-              return FadeTransition(
-                opacity: CurvedAnimation(parent: anim, curve: Curves.easeOut),
-                child: child,
-              );
-            },
-          ),
-        );
+          );
+        }
       }
     }
   }
@@ -263,6 +227,7 @@ class _BootSplashState extends State<BootSplash>
         pageBuilder: (_, a1, a2) => _InferenceWrapper(
           core: widget.core,
           inference: widget.inference,
+          coordinator: widget.coordinator,
           sessionManager: widget.sessionManager,
           sandboxPath: widget.sandboxPath,
           spectralOps: widget.spectralOps,
@@ -395,12 +360,14 @@ class _BootSplashState extends State<BootSplash>
 class _InferenceWrapper extends StatefulWidget {
   final AetherCore core;
   final LocalInferenceService inference;
+  final HybridInferenceCoordinator coordinator;
   final SessionManager sessionManager;
   final String sandboxPath;
   final SpectralOps spectralOps;
   const _InferenceWrapper({
     required this.core,
     required this.inference,
+    required this.coordinator,
     required this.sessionManager,
     required this.sandboxPath,
     required this.spectralOps,
@@ -465,23 +432,31 @@ class _InferenceWrapperState extends State<_InferenceWrapper> {
         }
 
         if (widget.core.chatMode == ChatMode.letsDo) {
-          final toolMaps = widget.core.router.getToolDefinitionsFlat();
-          return widget.inference.getResponseStream(
+          final activeTools = widget.core.router.getActiveTools();
+          return widget.coordinator.getResponseStream(
             redactedHistory,
-            maps: toolMaps,
+            tools: activeTools,
           );
         }
-        return widget.inference.getResponseStream(redactedHistory);
+        return widget.coordinator.getResponseStream(redactedHistory);
       },
       sessionManager: widget.sessionManager,
       sandboxPath: widget.sandboxPath,
       spectralOps: widget.spectralOps,
+      coordinator: widget.coordinator,
     );
   }
 }
 
 Future<void> requestStoragePermission() async {
   if (Platform.isAndroid) {
+    try {
+      var batteryStatus = await Permission.ignoreBatteryOptimizations.status;
+      if (!batteryStatus.isGranted) {
+        await Permission.ignoreBatteryOptimizations.request();
+      }
+    } catch (_) {}
+
     final androidInfo = await DeviceInfoPlugin().androidInfo;
 
     if (androidInfo.version.sdkInt >= 33) {

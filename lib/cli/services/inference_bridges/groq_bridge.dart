@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:apex_lite/core/domain/entities/message.dart';
 import 'package:apex_lite/core/domain/entities/inference_event.dart';
 import 'package:apex_lite/core/domain/interfaces/i_tool.dart';
+import 'package:apex_lite/cli/services/api_call_radar.dart';
 
 /// 🔱 Direct Groq Cloud Inference Bridge
 /// Connects AetherCore directly to Groq's super-fast cloud API.
@@ -115,13 +116,26 @@ Future<Stream<InferenceEvent>> callDirectGroqModel(
 
       try {
         final response = await currentClient.send(request);
+        ApiCallRadar.instance.record(category: ApiCallCategory.inference, method: 'POST', endpoint: 'groq', source: 'groq_bridge', statusCode: response.statusCode);
 
-        if (response.statusCode == 429) {
+        if (response.statusCode == 429 || response.statusCode == 413) {
           final errBody = await response.stream.transform(utf8.decoder).join();
           currentClient.close();
 
+          // 🔱 Groq uses 413 for TPM rate limits AND 429 for general rate limits.
+          // If 413 is a genuine context overflow (not rate_limit), throw immediately.
+          final isRateLimit = errBody.contains('rate_limit_exceeded') ||
+              errBody.contains('tokens per minute') ||
+              errBody.contains('requests per minute') ||
+              response.statusCode == 429;
+          
+          if (!isRateLimit) {
+            // True context overflow — throw, let waterfall handle
+            throw Exception('Groq API Error (HTTP ${response.statusCode}): $errBody');
+          }
+
           if (attempt == maxAttempts) {
-            throw Exception('Groq API Error (HTTP 429): $errBody');
+            throw Exception('Groq API Error (HTTP ${response.statusCode}): $errBody');
           }
 
           double waitSeconds = 5.0;
@@ -134,7 +148,7 @@ Future<Stream<InferenceEvent>> callDirectGroqModel(
             waitSeconds = 30.0;
           }
 
-          final statusMsg = '⏳ Rate limit hit. Retrying in ${waitSeconds.toStringAsFixed(1)}s...';
+          final statusMsg = '⏳ Rate limit hit (TPM). Retrying in ${waitSeconds.toStringAsFixed(1)}s...';
           if (onStatus != null) {
             onStatus(statusMsg);
           } else {
@@ -185,7 +199,7 @@ Future<Stream<InferenceEvent>> callDirectGroqModel(
     // Track accumulated tool call chunks (Groq streams tool_calls in fragments)
     final Map<int, Map<String, String>> toolCallAccumulator = {};
 
-    response.stream
+    final subscription = response.stream
         .transform(utf8.decoder)
         .transform(const LineSplitter())
         .listen(
@@ -278,6 +292,11 @@ Future<Stream<InferenceEvent>> callDirectGroqModel(
             client.close();
           },
         );
+
+    controller.onCancel = () {
+      subscription.cancel();
+      client.close();
+    };
   } catch (e) {
     controller.add(FatalErrorEvent('Groq connection failed: $e'));
     controller.close();

@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:apex_lite/core/domain/entities/message.dart';
 import 'package:apex_lite/core/domain/entities/inference_event.dart';
 import 'package:apex_lite/core/domain/interfaces/i_tool.dart';
+import 'package:apex_lite/cli/services/api_call_radar.dart';
 
 /// 🔱 Direct OpenRouter Cloud Inference Bridge
 /// Connects AetherCore directly to OpenRouter's API router.
@@ -104,6 +105,7 @@ Future<Stream<InferenceEvent>> callDirectOpenRouterModel(
 
       try {
         final response = await currentClient.send(request).timeout(const Duration(seconds: 15));
+        ApiCallRadar.instance.record(category: ApiCallCategory.inference, method: 'POST', endpoint: 'openrouter', source: 'openrouter_bridge', statusCode: response.statusCode);
 
         if (response.statusCode == 429) {
           final errBody = await response.stream.transform(utf8.decoder).join();
@@ -149,7 +151,7 @@ Future<Stream<InferenceEvent>> callDirectOpenRouterModel(
 
     final Map<int, Map<String, String>> toolCallAccumulator = {};
 
-    activeResponse.stream
+    final subscription = activeResponse.stream
         .transform(utf8.decoder)
         .transform(const LineSplitter())
         .listen(
@@ -260,6 +262,11 @@ Future<Stream<InferenceEvent>> callDirectOpenRouterModel(
           },
           cancelOnError: true,
         );
+
+    controller.onCancel = () {
+      subscription.cancel();
+      activeClient?.close();
+    };
   } catch (e) {
     controller.addError(e);
     controller.close();

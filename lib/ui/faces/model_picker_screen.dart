@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_gemma/flutter_gemma.dart' as gemma;
 import '../../core/infrastructure/services/local_inference_service.dart';
 import '../../core/infrastructure/services/session_manager.dart';
 import '../../core/infrastructure/heartbeat/aether_core.dart';
 import '../theme/divine_palette.dart';
+import '../../cli/services/config_manager.dart';
 
 /// Premium model selection screen.
 /// Users can either pick a locally stored model file or download one.
@@ -36,12 +38,14 @@ class _ModelPickerScreenState extends State<ModelPickerScreen>
   int _downloadProgress = 0;
   String? _statusMessage;
   late AnimationController _pulseController;
+  ExecutionMode _executionMode = ExecutionMode.local;
 
   static const _accent = DivinePalette.neonCyan;
 
   @override
   void initState() {
     super.initState();
+    _executionMode = ConfigManager.loadExecutionMode();
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 2),
@@ -59,7 +63,22 @@ class _ModelPickerScreenState extends State<ModelPickerScreen>
       final file = File(filePath);
       // Check if file exists and is large enough to be a valid model
       if (!file.existsSync()) return false;
-      if (file.lengthSync() < 1000000) return false; // Minimum size check
+      final size = file.lengthSync();
+      if (size < 1000000) return false; // Minimum size check (1MB)
+
+      // Soft bypass for Gemma 4 (.litertlm) or binary (.bin / .tflite) files
+      // which package weights/configs and do not start with raw TFLite flatbuffer magic bytes.
+      final pathLower = filePath.toLowerCase();
+      if (pathLower.endsWith('.litertlm') ||
+          pathLower.endsWith('.bin') ||
+          pathLower.endsWith('.tflite')) {
+        return true;
+      }
+
+      // Bypass check for massive files (> 50MB) — highly likely to be valid model files
+      if (size > 50 * 1024 * 1024) {
+        return true;
+      }
 
       final raf = await file.open(mode: FileMode.read);
       final bytes = await raf.read(8);
@@ -69,8 +88,7 @@ class _ModelPickerScreenState extends State<ModelPickerScreen>
       // Accept both TFL3 (standard) and potentially other valid TFLite formats
       return magic == 'TFL3' || magic == 'TFL4' || magic == 'LITE';
     } catch (e) {
-      // If validation fails, don't block the model loading
-      // Some valid models might not pass the magic byte check
+      // If validation throws an exception, fallback to basic existence and size check
       final file = File(filePath);
       return file.existsSync() && file.lengthSync() > 1000000;
     }
@@ -247,6 +265,42 @@ class _ModelPickerScreenState extends State<ModelPickerScreen>
                       style: ElevatedButton.styleFrom(
                         backgroundColor: DivinePalette.neonCyan,
                         foregroundColor: Colors.black,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+                // Add SKIP option if in Hybrid/Cloud mode, or if in debug mode (for emulator bypass)
+                if ((_executionMode != ExecutionMode.local || kDebugMode) &&
+                    !(_statusMessage != null &&
+                        (_statusMessage!.contains('Model ready') ||
+                            _statusMessage!.contains('✅ Model ready')))) ...[
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        if (kDebugMode && _executionMode == ExecutionMode.local) {
+                          widget.inference.enableBypass();
+                        }
+                        widget.onModelReady(context);
+                      },
+                      icon: Icon(kDebugMode && _executionMode == ExecutionMode.local ? Icons.developer_mode : Icons.cloud_queue, size: 18),
+                      label: Text(
+                        kDebugMode && _executionMode == ExecutionMode.local ? 'BYPASS MODEL (DEBUG EMULATOR)' : 'SKIP / CHAT WITH CLOUD',
+                        style: TextStyle(
+                          fontFamily: 'monospace',
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                          letterSpacing: 1.5,
+                        ),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        side: BorderSide(color: Colors.white.withAlpha(40)),
+                        foregroundColor: Colors.white.withAlpha(180),
                         padding: const EdgeInsets.symmetric(vertical: 16),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(8),

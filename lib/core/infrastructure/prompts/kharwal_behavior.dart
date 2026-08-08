@@ -16,7 +16,10 @@
 // sections minimal (total ~800 tokens) because every token in the
 // system prompt reduces available context for actual conversation.
 
+import 'dart:io';
+import 'package:path/path.dart' as p;
 import 'package:apex_lite/core/infrastructure/prompts/prompt_cache_optimizer.dart';
+
 
 class KharwalBehavior {
   /// Build the complete behavioral guidance for the agent.
@@ -50,10 +53,44 @@ class KharwalBehavior {
     final paddedStableText = PromptCacheOptimizer.padToBoundary(stableText, 1024);
 
     // 4. Dynamic Tail (changes on every turn or location shift)
-    final dynamicText = _contextInfo(cwd, isAgentMode, isCli: isCli, modelName: modelName);
+    var dynamicText = _contextInfo(cwd, isAgentMode, isCli: isCli, modelName: modelName);
+
+    // 🔱 Supreme Learning: Load consolidated long-term memory/knowledge if available
+    try {
+      final memFile = File(p.join(cwd, '.apex_config', 'memory', 'global_memory.txt'));
+      if (memFile.existsSync()) {
+        final rawContent = memFile.readAsStringSync().trim();
+        if (rawContent.isNotEmpty) {
+          final lines = rawContent.split('\n')
+              .map((l) => l.trim())
+              .where((l) => l.isNotEmpty && (l.startsWith('-') || l.startsWith('*') || RegExp(r'^\d+\.').hasMatch(l)))
+              .toList();
+
+          if (lines.isNotEmpty) {
+            // Keep only the 10 most recent facts to avoid context window bloating
+            final capCount = 10;
+            final keptLines = lines.length > capCount 
+                ? lines.sublist(lines.length - capCount) 
+                : lines;
+
+            final memoryBuffer = StringBuffer();
+            if (lines.length > capCount) {
+              memoryBuffer.writeln('  [Older long-term memories archived to save context budget]');
+            }
+            for (final line in keptLines) {
+              memoryBuffer.writeln('  $line');
+            }
+
+            dynamicText += '\n\n🔱 LONG-TERM KNOWLEDGE (CONSOLIDATED MEMORY):\n${memoryBuffer.toString().trim()}';
+          }
+        }
+      }
+    } catch (_) {}
+
 
     return '$paddedStableText\n\n$dynamicText';
   }
+
 
   // ─── Section 1: Who are you? ─────────────────────────────────
   static const _coreIdentity = '''You are Agent Kharwal, a local AI assistant running entirely on this device.
@@ -141,8 +178,12 @@ If the system tells you "[TASK COMPLETED]" — you MUST respond with text only, 
 Available: ${tools.join(', ')}
 - Use file_read to read files (not cat via bash)
 - Use file_write to write files (not echo/heredoc via bash)
-- Use directory_briefing to explore folders (not ls via bash)
-- Reserve bash for commands that need shell execution (compile, run, install)
+- Use directory_briefing or project_map to explore directory structures (not ls via bash)
+- Use git_status, git_diff, git_commit, git_log, and git_checkout for Git operations (not raw git commands via bash)
+- Use verify_project to run static analysis, linters, and verify compilation (not raw compilation commands via bash)
+- Use smart_gather_context to trace file imports and gather relevant codebase dependencies
+- Use search_memory to query long-term consolidated memory/knowledge for historical transactions, rates, code choices, or decisions
+- Reserve bash for commands that need native execution (running applications, testing, etc.)
 - If you need multiple independent operations, request them all at once.''';
 
   // ─── Section 5: Keep it short ───────────────────────────────

@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:apex_lite/core/domain/entities/message.dart';
 import 'package:apex_lite/core/domain/entities/inference_event.dart';
 import 'package:apex_lite/core/domain/interfaces/i_tool.dart';
+import 'package:apex_lite/cli/services/api_call_radar.dart';
 
 /// 🔱 Direct NVIDIA Cloud Inference Bridge
 /// Connects AetherCore directly to NVIDIA's high-performance cloud API.
@@ -115,6 +116,7 @@ Future<Stream<InferenceEvent>> callDirectNvidiaModel(
 
       try {
         final response = await currentClient.send(request);
+        ApiCallRadar.instance.record(category: ApiCallCategory.inference, method: 'POST', endpoint: 'nvidia', source: 'nvidia_bridge', statusCode: response.statusCode);
 
         if (response.statusCode == 429) {
           final errBody = await response.stream.transform(utf8.decoder).join();
@@ -160,7 +162,7 @@ Future<Stream<InferenceEvent>> callDirectNvidiaModel(
 
     final Map<int, Map<String, String>> toolCallAccumulator = {};
 
-    activeResponse.stream
+    final subscription = activeResponse.stream
         .transform(utf8.decoder)
         .transform(const LineSplitter())
         .listen(
@@ -242,6 +244,11 @@ Future<Stream<InferenceEvent>> callDirectNvidiaModel(
           },
           cancelOnError: true,
         );
+
+    controller.onCancel = () {
+      subscription.cancel();
+      activeClient?.close();
+    };
   } catch (e) {
     controller.addError(e);
     controller.close();

@@ -7,6 +7,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_gemma/flutter_gemma.dart' as gemma;
 import '../../domain/entities/message.dart';
 import '../../domain/entities/inference_event.dart';
+import '../../../cli/services/config_manager.dart';
 // tool_entities.dart imported via AgentRouter where needed
 
 // 🔱 Divine Concurrency Lock: Serializes ALL engine access.
@@ -34,6 +35,16 @@ class LocalInferenceService {
   String? get errorMessage => _errorMessage;
   String? _loadedModelName;
   String? get loadedModelName => _loadedModelName;
+
+  bool _isBypassed = false;
+  bool get isBypassed => _isBypassed;
+
+  void enableBypass() {
+    _isBypassed = true;
+    _state = ModelLoadState.ready;
+    _loadedModelName = 'Mock Gemma 4 (Bypassed)';
+    _errorMessage = null;
+  }
 
   int maxTokens = 8192;
   StreamSubscription<String>? _activeSubscription;
@@ -215,10 +226,42 @@ class LocalInferenceService {
     }
   }
 
-  /// Initialize FlutterGemma engine (no model loaded yet)
+  /// Initialize FlutterGemma engine and restore/auto-detect any previously downloaded model
   Future<bool> initialize() async {
     try {
       await gemma.FlutterGemma.initialize();
+      
+      String? targetPath = ConfigManager.loadLastLoadedModelPath();
+      String? targetName = ConfigManager.loadLastLoadedModelName();
+
+      // If no saved path, check the exact public Download directory
+      if (targetPath == null || targetPath.isEmpty) {
+        final List<String> potentialFiles = [
+          '/storage/emulated/0/Download/ApexModels/Gemma_4_E2B.litertlm',
+          '/storage/emulated/0/Download/ApexModels/gemma-4-E2B-it.litertlm',
+        ];
+
+        for (final p in potentialFiles) {
+          final f = File(p);
+          if (f.existsSync() && f.lengthSync() > 800000000) {
+            targetPath = p;
+            targetName = p.split('/').last;
+            break;
+          }
+        }
+      }
+
+      if (targetPath != null && targetPath.isNotEmpty) {
+        final exists = await checkModelFileExists(targetPath);
+        if (exists) {
+          debugPrint('🔱 [LocalInference] Restoring/Auto-detecting model at startup: $targetPath');
+          await loadModelFromFile(
+            modelType: ModelType.gemma4,
+            filePath: targetPath,
+            fileName: targetName,
+          );
+        }
+      }
       return true;
     } catch (_) {
       _state = ModelLoadState.error;
@@ -233,6 +276,7 @@ class LocalInferenceService {
     required String filePath,
     String? fileName,
   }) async {
+    _isBypassed = false;
     _state = ModelLoadState.loading;
     _errorMessage = null;
     _loadedModelName = fileName ?? filePath.split('/').last;
@@ -255,12 +299,40 @@ class LocalInferenceService {
         return false;
       }
 
+      String finalPath = filePath;
+
+      if (Platform.isAndroid && (filePath.startsWith('/storage/emulated/') || filePath.startsWith('/sdcard/'))) {
+        final supportDir = await getApplicationSupportDirectory();
+        final privateModelDir = Directory('${supportDir.path}/ApexModels');
+        if (!privateModelDir.existsSync()) {
+          privateModelDir.createSync(recursive: true);
+        }
+
+        final privatePath = '${privateModelDir.path}/${file.uri.pathSegments.last}';
+        final privateFile = File(privatePath);
+
+        if (!privateFile.existsSync() || privateFile.lengthSync() != file.lengthSync()) {
+          debugPrint('🔱 [LocalInference] Public model path detected: $filePath');
+          debugPrint('🔱 [LocalInference] Copying to private directory (Scoped Storage bypass): $privatePath');
+          await file.copy(privatePath);
+          debugPrint('🔱 [LocalInference] Copy completed successfully ✅');
+        } else {
+          debugPrint('🔱 [LocalInference] Model already present in private directory: $privatePath');
+        }
+        finalPath = privatePath;
+      }
+
       await gemma.FlutterGemma.installModel(
         modelType: gemmaModelType,
         fileType: gemma.ModelFileType.litertlm,
-      ).fromFile(filePath).install();
+      ).fromFile(finalPath).install();
 
       _state = ModelLoadState.ready;
+      
+      // Save last loaded model path and name for persistence
+      ConfigManager.saveLastLoadedModelPath(finalPath);
+      ConfigManager.saveLastLoadedModelName(_loadedModelName);
+      
       return true;
     } catch (e) {
       _state = ModelLoadState.error;
@@ -275,6 +347,7 @@ class LocalInferenceService {
     String? huggingFaceToken,
     void Function(int progress)? onProgress,
   }) async {
+    _isBypassed = false;
     _state = ModelLoadState.loading;
     _errorMessage = null;
 
@@ -283,11 +356,9 @@ class LocalInferenceService {
       final url = _getModelUrl(gemmaModelType);
       final modelFileName =
           '${_getModelName(gemmaModelType).replaceAll(' ', '_')}.litertlm';
-
-      // Determine public persistent save path
       Directory? saveDir;
+
       if (Platform.isAndroid) {
-        // Request all necessary permissions for Android 11+
         bool hasPermission = await requestStoragePermissions();
         if (!hasPermission) {
           throw Exception('Storage permissions not granted');
@@ -310,33 +381,12 @@ class LocalInferenceService {
         }
       }
 
-      // 1. First, search the user's public Downloads directory for any existing model
-      final publicDownloadDir = Directory('/storage/emulated/0/Download');
-      if (publicDownloadDir.existsSync()) {
-        try {
-          final files = publicDownloadDir.listSync();
-          for (var f in files) {
-            if (f is File && f.path.endsWith('.litertlm') && f.lengthSync() > 1000000000) {
-              // Found a valid model in Downloads! Use it directly.
-              if (onProgress != null) onProgress(100);
-              return await loadModelFromFile(
-                modelType: modelType,
-                filePath: f.path,
-                fileName: f.path.split('/').last,
-              );
-            }
-          }
-        } catch (_) {
-          // Ignore directory read errors
-        }
-      }
-
-      // 2. If not found in root, check the ApexModels subfolder
+      // 1. Search the exact public Downloads folder for the model first
       final savePath = '${saveDir.path}/$modelFileName';
       final file = File(savePath);
 
-      // Auto-resume / skip download if file already exists in ApexModels and is reasonably large (>1GB)
-      if (file.existsSync() && file.lengthSync() > 1000000000) {
+      // Auto-resume / skip download if file already exists in ApexModels and is reasonably large (>800MB)
+      if (file.existsSync() && file.lengthSync() > 800000000) {
         if (onProgress != null) onProgress(100);
         return await loadModelFromFile(
           modelType: modelType,
@@ -400,6 +450,12 @@ class LocalInferenceService {
     List<Message> history, {
     List<Map<String, dynamic>>? maps,
   }) async {
+    if (_isBypassed) {
+      final controller = StreamController<InferenceEvent>();
+      _generateMockResponse(history, controller, maps);
+      return controller.stream;
+    }
+
     if (_state != ModelLoadState.ready) {
       return Stream.value(TextToken('Model is not loaded. Please select a model first.'));
     }
@@ -450,6 +506,95 @@ class LocalInferenceService {
         return _handleFinalError(e);
       }
     });
+  }
+
+  /// Generate mock responses for fast debug/testing in emulator
+  Future<void> _generateMockResponse(
+    List<Message> history,
+    StreamController<InferenceEvent> controller,
+    List<Map<String, dynamic>>? maps,
+  ) async {
+    try {
+      // 1. Emit ThinkingToken first (mimics deep reasoning)
+      await Future.delayed(const Duration(milliseconds: 300));
+      if (controller.isClosed) return;
+      controller.add(ThinkingToken('Analyzing user prompt in Mock/Bypass debug mode...\n'));
+      await Future.delayed(const Duration(milliseconds: 400));
+      if (controller.isClosed) return;
+      controller.add(ThinkingToken('Checking active tools and conversation history...\n'));
+      await Future.delayed(const Duration(milliseconds: 300));
+
+      final lastUserMessage = history.lastWhere(
+        (m) => m.role == MessageRole.user,
+        orElse: () => Message(role: MessageRole.user, content: 'hi'),
+      );
+      final userText = lastUserMessage.content.trim().toLowerCase();
+
+      // Check if we are in agent tools mode (e.g. maps is not null/empty, or user asks for ledger / system commands)
+      final hasTools = maps != null && maps.isNotEmpty;
+
+      if (hasTools) {
+        controller.add(ThinkingToken('Agent mode is active. Formulating system/file command execution plan...\n'));
+        await Future.delayed(const Duration(milliseconds: 400));
+        
+        // Let's check if the user wanted a specific action or command
+        // We'll output a mock tool call or code block so the UI shows the tool cards / execution
+        if (userText.contains('ledger') || userText.contains('shopkeeper') || userText.contains('kg') || userText.contains('likh do')) {
+          // Shopkeeper Ledger test
+          final textTokens = [
+            'Based on your ledger request, I will create a new ledger file for the customer.\n\n',
+            'I will run a command to create the Ledger folder if it doesn\'t exist, and write the entries.\n\n',
+            '```bash\nmkdir -p Ledger\necho "Date: ${DateTime.now().toString().substring(0, 10)}\nCustomer: Ramesh\nItem: Rice - 5 kg\nItem: Sugar - 2 kg\nItem: Oil - 1 litre" > Ledger/Ramesh_Ledger.txt\ncat Ledger/Ramesh_Ledger.txt\n```\n\n',
+            'I have formulated the commands. Let\'s execute them to complete the ledger update.'
+          ];
+          for (final t in textTokens) {
+            if (controller.isClosed) return;
+            controller.add(TextToken(t));
+            await Future.delayed(const Duration(milliseconds: 150));
+          }
+        } else {
+          // Default agent action
+          final textTokens = [
+            'I understand you want to test the autonomous agent loop in mock mode.\n\n',
+            'I will execute a mock directory briefing / check to show how tool execution works in the UI:\n\n',
+            '```bash\nls -la\n```\n\n',
+            'Once this command runs, we can proceed with any subsequent tasks. How can I help you next?'
+          ];
+          for (final t in textTokens) {
+            if (controller.isClosed) return;
+            controller.add(TextToken(t));
+            await Future.delayed(const Duration(milliseconds: 150));
+          }
+        }
+      } else {
+        // Simple chat mode
+        final textTokens = [
+          'Hello! I am **Agent Kharwal**, running in **Mock/Bypass Debug Mode** 🚀.\n\n',
+          'This mode allows you to test the entire Flutter UI, streaming chat, visual aesthetics, and inputs '
+          '**instantly** inside the emulator without downloading the 1GB+ Gemma 4 model weights!\n\n',
+          '**Status & Capabilities:**\n',
+          '• 🔒 **Privacy:** 100% simulated locally on-device.\n',
+          '• ⚡ **Speed:** Ultra-fast sub-millisecond response latency.\n',
+          '• 🛠️ **Agent Loop:** Turn on "Agent Mode" (Let\'s Build / letsDo mode) from the toggle at the top '
+          'to test how the autonomous bash execution and tool consensus cards look in this premium theme.\n\n',
+          'Ask me any question, write some code, or test out inputs like images 📸 and audio 🎤. I will respond immediately!'
+        ];
+
+        for (final t in textTokens) {
+          if (controller.isClosed) return;
+          controller.add(TextToken(t));
+          await Future.delayed(const Duration(milliseconds: 100));
+        }
+      }
+    } catch (e) {
+      if (!controller.isClosed) {
+        controller.add(TextToken('Error in mock generator: $e'));
+      }
+    } finally {
+      if (!controller.isClosed) {
+        controller.close();
+      }
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────
@@ -565,36 +710,37 @@ class LocalInferenceService {
       debugPrint('🎤 [Audio] Audio detected — audio pipeline active.');
     }
 
+    final isAgent = tools != null && tools.isNotEmpty;
+
     final model = await gemma.FlutterGemma.getActiveModel(
       maxTokens: maxTokens,
       preferredBackend: activeBackend,
       supportImage: true,
       supportAudio: hasAudio,
       maxNumImages: 1,
-      // 🔱 Speculative decoding DISABLED when tools are active.
-      // The MTP drafter's token predictions can conflict with the constrained
-      // decoding grammar used for native function calling (<|tool_call|>),
-      // causing top_p_cpu_sampler crashes. Only enable for plain chat.
-      enableSpeculativeDecoding: tools == null || tools.isEmpty,
+      // 🔱 Speculative decoding disabled on mobile devices to prevent LiteRT engine stalls/hangs.
+      enableSpeculativeDecoding: false,
     );
 
-    // 🔱 Supreme Fix: ALWAYS use text-based bash code blocks for the 2B model.
-    // Passing native `tools:` confuses the 2B model when combined with `isThinking: true`,
-    // causing it to output malformed JSON or empty responses, which breaks the agentic loop.
-    // AetherCore's TextInterceptor handles the extraction robustly.
+    // 🔱 Supreme Fix: ALWAYS use text-based bash code blocks for the 2B model in Agent mode.
+    // Differentiate systemInstruction based on mode (Simple Chat vs Agent Tools mode)
     final chat = await model.createChat(
       isThinking: true,
       temperature: 0.7,
-      systemInstruction: 'You are Agent Kharwal, an autonomous AI agent running entirely on-device. '
-          'You help TWO types of users: '
-          '1) STUDENTS — answer questions, explain concepts, write code. '
-          '2) SHOPKEEPERS — when user mentions items with quantities (kg, packets, litre) and a person name, '
-          'or words like account, khata, ledger, likh do — this is a SHOPKEEPER LEDGER request. '
-          'Create a structured table (Date, Customer, Item, Qty, Unit) and save as Ledger/[Name]_[Date].txt. '
-          'For ALL file/system operations, write exact shell commands in ```bash code blocks. '
-          'Example: ```bash\nmkdir -p Ledger\n``` '
-          'Be precise and execute tasks completely. '
-          'Once done, summarize and stop — no more bash blocks.',
+      systemInstruction: isAgent
+          ? 'You are Agent Kharwal, an autonomous AI agent running entirely on-device. '
+              'You help TWO types of users: '
+              '1) STUDENTS — answer questions, explain concepts, write code. '
+              '2) SHOPKEEPERS — when user mentions items with quantities (kg, packets, litre) and a person name, '
+              'or words like account, khata, ledger, likh do — this is a SHOPKEEPER LEDGER request. '
+              'Create a structured table (Date, Customer, Item, Qty, Unit) and save as Ledger/[Name]_[Date].txt. '
+              'For ALL file/system operations, write exact shell commands in ```bash code blocks. '
+              'Example: ```bash\nmkdir -p Ledger\n``` '
+              'Be precise and execute tasks completely. '
+              'Once done, summarize and stop — no more bash blocks.'
+          : 'You are Agent Kharwal, an intelligent and helpful AI assistant running entirely on-device. '
+              'Answer the user\'s questions clearly, concisely, and accurately in a conversational tone. '
+              'You are in a direct chat mode, so do not try to run system commands or output bash code blocks.',
     );
     
     for (final m in history) {
@@ -791,6 +937,7 @@ class LocalInferenceService {
     _state = ModelLoadState.noModel;
     _errorMessage = null;
     _loadedModelName = null;
+    _isBypassed = false;
   }
 
   /// Get model URL for download

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:path/path.dart' as p;
+import 'package:apex_lite/cli/services/api_call_radar.dart';
 import '../../domain/interfaces/i_tool.dart';
 import '../../domain/entities/tool_entities.dart';
 import '../security/path_jailer.dart';
@@ -113,6 +114,7 @@ class SseMcpTransport implements McpTransport {
       ..headers['Cache-Control'] = 'no-cache';
 
     final response = await _client!.send(request);
+    ApiCallRadar.instance.record(category: ApiCallCategory.tool, method: 'GET', endpoint: 'mcp-sse', source: 'mcp_tools', statusCode: response.statusCode);
 
     if (response.statusCode != 200) {
       throw Exception('SSE Connection failed with HTTP ${response.statusCode}');
@@ -159,6 +161,7 @@ class SseMcpTransport implements McpTransport {
       headers: {'Content-Type': 'application/json'},
       body: payload,
     );
+    ApiCallRadar.instance.record(category: ApiCallCategory.tool, method: 'POST', endpoint: 'mcp-post', source: 'mcp_tools', statusCode: response.statusCode);
     if (response.statusCode >= 400) {
       throw Exception('Failed to send HTTP frame to MCP Server: HTTP ${response.statusCode}');
     }

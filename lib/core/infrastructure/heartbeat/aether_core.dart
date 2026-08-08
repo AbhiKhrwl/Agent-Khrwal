@@ -24,6 +24,7 @@ import '../services/speculative_sandbox.dart';
 import 'history_compactor.dart';
 import 'tool_safety_guard.dart';
 import '../services/process_utils.dart';
+import '../tools/agent_tool.dart';
 
 /// 🔱 Supreme Fix 1: Random jitter source for exponential backoff.
 final _jitterRng = Random();
@@ -61,6 +62,7 @@ class AetherCore {
   }
 
   // 🔱 SUPREME UPGRADE: Progress-Aware Completion Intelligence
+  // ignore: unused_field
   int _consecutiveDenials = 0;         // Denial hard-stop counter
   String? _lastToolFingerprint;         // Same-tool repeat guard
   int _sameToolRepeatCount = 0;         // Same-tool repeat counter
@@ -73,6 +75,9 @@ class AetherCore {
   final List<InputEvent> _taskQueue = [];
   bool get isBusy => _isBusy;
   List<InputEvent> get taskQueue => List.unmodifiable(_taskQueue);
+
+  // 🔱 Stream Subscription tracking to prevent multiple concurrent listeners and rate limits
+  StreamSubscription<InputEvent>? _inputSubscription;
 
   // 🔱 Bug 6 Fix: Separate counter for empty response retries
   int _emptyResponseRetries = 0;
@@ -103,13 +108,76 @@ class AetherCore {
   final _eventController = StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get eventStream => _eventController.stream;
 
+  IInputAdapter? _boundInputAdapter;
+  Future<Stream<InferenceEvent>> Function(List<Message> history)? _boundCallModel;
+  List<Message>? _boundHistory;
+
   AetherCore({
     required this.router,
     required this.protocol,
     this.mode = ProtocolMode.guardian,
     this.maxRetries = 3,
     this.chatMode = ChatMode.justTalk,
-  });
+  }) {
+    SubAgentRegistry.onLog = (logLine) {
+      _eventController.add({
+        'type': 'log',
+        'data': logLine,
+      });
+    };
+    SubAgentRegistry.onAgentComplete = (agentName, resultText) {
+      injectSubAgentCompletion(agentName, resultText);
+    };
+  }
+
+  Future<void> injectSubAgentCompletion(String agentName, String resultText) async {
+    // 🔱 Terminal bell notification — audible ping on agent completion
+    stdout.write('\x07');
+
+    // Emit a dedicated event for UI layers to react (CLI sidebar, mobile UI, etc.)
+    _eventController.add({
+      'type': 'swarm_complete',
+      'agent': agentName,
+      'data': '✓ Sub-agent "$agentName" finished.',
+    });
+
+    final systemPrompt = '🔱 [Sub-Agent Completed] Sub-agent "$agentName" has completed its background task.\n'
+        'Result Findings:\n$resultText\n\n'
+        'Please review these findings and incorporate them into your master plan or report the completion to the user.';
+    
+    final event = InputEvent(
+      type: InputType.text,
+      data: systemPrompt,
+    );
+
+    if (_isBusy) {
+      _taskQueue.add(event);
+      _eventController.add({
+        'type': 'task_queued',
+        'data': 'Sub-agent "$agentName" completed. Processing queued...',
+        'position': _taskQueue.length,
+      });
+    } else {
+      if (_boundInputAdapter != null && _boundCallModel != null && _boundHistory != null) {
+        _isBusy = true;
+        _eventController.add({
+          'type': 'status',
+          'data': '🔱 Processing sub-agent completion findings...',
+        });
+        await _processInputEvent(
+          event: event,
+          history: _boundHistory!,
+          callModel: _boundCallModel!,
+          inputAdapter: _boundInputAdapter!,
+        );
+        _isBusy = false;
+      }
+    }
+  }
+
+  /// 🔱 Dynamic Context Control Properties
+  int activeContextLimit = 32768; // Default to 32K window size (e.g. Gemma 4)
+  bool isLocalMode = false;      // Tracks if we are executing on-device local models
 
   // 🔱 Core Extraction: SESSION TELEMETRY
   // Track performance across the entire session for dashboard/judges.
@@ -147,54 +215,76 @@ class AetherCore {
     required List<Message> history,
     required Future<Stream<InferenceEvent>> Function(List<Message> history) callModel,
   }) async {
-    await for (final event in inputAdapter.inputChannel) {
-      if (event.type == InputType.text && event.data.trim().isEmpty) {
-        _eventController.add({
-          'type': 'status',
-          'data': '⚠️ Empty prompt received. Please enter your task first.',
-        });
-        continue;
-      }
+    _boundInputAdapter = inputAdapter;
+    _boundHistory = history;
+    _boundCallModel = callModel;
 
-      // 🔱 TASK QUEUE: If busy, queue this event instead of processing
-      if (_isBusy) {
-        _taskQueue.add(event);
-        _eventController.add({
-          'type': 'task_queued',
-          'data': event.data,
-          'position': _taskQueue.length,
-        });
-        continue;
-      }
+    // 🔱 Cancel previous subscription if it exists to avoid duplicate handlers and rate limits!
+    await _inputSubscription?.cancel();
+    _cancelRequested = false;
 
-      // Process the current event
-      _isBusy = true;
-      await _processInputEvent(
-        event: event,
-        history: history,
-        callModel: callModel,
-        inputAdapter: inputAdapter,
-      );
-      _isBusy = false;
+    final completer = Completer<void>();
+    _inputSubscription = inputAdapter.inputChannel.listen(
+      (event) async {
+        if (event.type == InputType.text && event.data.trim().isEmpty) {
+          _eventController.add({
+            'type': 'status',
+            'data': '⚠️ Empty prompt received. Please enter your task first.',
+          });
+          return;
+        }
 
-      // 🔱 DRAIN QUEUE: Process next queued task (FIFO)
-      while (_taskQueue.isNotEmpty && !_cancelRequested) {
-        final nextEvent = _taskQueue.removeAt(0);
-        _eventController.add({
-          'type': 'task_dequeued',
-          'data': nextEvent.data,
-          'remaining': _taskQueue.length,
-        });
+        // 🔱 TASK QUEUE: If busy, queue this event instead of processing
+        if (_isBusy) {
+          _taskQueue.add(event);
+          _eventController.add({
+            'type': 'task_queued',
+            'data': event.data,
+            'position': _taskQueue.length,
+          });
+          return;
+        }
+
+        // Process the current event
         _isBusy = true;
         await _processInputEvent(
-          event: nextEvent,
+          event: event,
           history: history,
           callModel: callModel,
           inputAdapter: inputAdapter,
         );
         _isBusy = false;
-      }
-    }
+
+        // 🔱 DRAIN QUEUE: Process next queued task (FIFO)
+        while (_taskQueue.isNotEmpty && !_cancelRequested) {
+          final nextEvent = _taskQueue.removeAt(0);
+          _eventController.add({
+            'type': 'task_dequeued',
+            'data': nextEvent.data,
+            'remaining': _taskQueue.length,
+          });
+          _isBusy = true;
+          await _processInputEvent(
+            event: nextEvent,
+            history: history,
+            callModel: callModel,
+            inputAdapter: inputAdapter,
+          );
+          _isBusy = false;
+        }
+      },
+      onDone: () {
+        completer.complete();
+      },
+      onError: (err) {
+        if (!completer.isCompleted) {
+          completer.completeError(err);
+        }
+      },
+      cancelOnError: false,
+    );
+
+    await completer.future;
   }
 
   /// 🔱 Extracted helper: processes a single InputEvent end-to-end.
@@ -333,6 +423,31 @@ class AetherCore {
         unawaited(runDreamConsolidation(scheduler, callModel));
       }
     }
+
+    // 🔱 Check if all sub-agents completed and we should autonomously continue the loop
+    if (chatMode == ChatMode.letsDo) {
+      final activeCount = SubAgentRegistry.activeAgents.values
+          .where((a) => a['status'] == 'in_progress' || a['status'] == 'todo')
+          .length;
+      final wasSubAgentCompletionMsg = event.data.contains('[Sub-Agent Completed]');
+      
+      if (wasSubAgentCompletionMsg && activeCount == 0) {
+        final lastMsg = history.isNotEmpty ? history.last : null;
+        if (lastMsg != null && lastMsg.role == MessageRole.assistant) {
+          _eventController.add({
+            'type': 'status',
+            'data': '🔱 All sub-agents completed. Auto-triggering next system turn...',
+          });
+          
+          final autoTurn = InputEvent(
+            type: InputType.text,
+            data: '🔱 [All Sub-Agents Completed] All background tasks are finished. Synthesize the results, make final decisions, and proceed with the remaining implementation steps autonomously now.',
+          );
+          
+          _taskQueue.add(autoTurn);
+        }
+      }
+    }
   }
 
   Future<void> runDreamConsolidation(
@@ -416,6 +531,10 @@ class AetherCore {
   }) async {
     _cancelRequested = false;
 
+    // 🔱 Platform-safe lazy init: ensure PlanModeCoordinator has writable paths
+    // MUST happen before any PlanModeCoordinator.instance access below.
+    await PlanModeCoordinator.instance.ensureInitialized();
+
     // 🔱 SUPREME: Reset all anti-loop intelligence for fresh task
     _consecutiveDenials = 0;
     _lastToolFingerprint = null;
@@ -431,7 +550,7 @@ class AetherCore {
     // the XML/JSON tool flow.
     // NOTE: actually, we will remove this and rely on system instruction for bash code blocks.
 
-    compactor.trimHistory(history, chatMode);
+    compactor.trimHistory(history, chatMode, contextLimit: activeContextLimit, isLocalMode: isLocalMode);
 
     int consecutiveErrors = 0;
     int backoffMs = 500; // 🔱 Supreme Fix 1: Starting backoff for exp. delay
@@ -442,6 +561,8 @@ class AetherCore {
     // assess complexity from the user's message to save battery + time.
     final maxTurns = compactor.calcAdaptiveTurnDepth(history);
     int turnCount = 0;
+    bool hasUnresolvedErrors = false;
+    int critiqueCount = 0;
 
     while (true) {
       if (_cancelRequested) break;
@@ -510,18 +631,22 @@ class AetherCore {
           await _injectSandboxContext(history);
         }
 
-        // 🔱 Core Extraction: AUTO-COMPACT / AI SUMMARIZATION
-        // 🔱 Infinite Memory Architecture: when context grows too large,
-        // use the model itself to summarize old messages. This keeps the
-        // context window lean while preserving all critical information.
-        await compactor.autoCompactIfNeeded(history, callModel, chatMode, sessionId: sessionId, eventController: _eventController);
+        await compactor.autoCompactIfNeeded(
+          history,
+          callModel,
+          chatMode,
+          sessionId: sessionId,
+          eventController: _eventController,
+          contextLimit: activeContextLimit,
+          isLocalMode: isLocalMode,
+        );
 
         // 🥁 Strip audio from history BEFORE each model call — prevents
         // re-sending audio on retries and keeps token count within limits.
         compactor.stripAudioFromHistory(history);
         // 🔱 Core Extraction: Strip thinking traces from history too
         compactor.stripThinkingFromHistory(history);
-        compactor.trimHistory(history, chatMode);
+        compactor.trimHistory(history, chatMode, contextLimit: activeContextLimit, isLocalMode: isLocalMode);
 
         final stopwatch = Stopwatch()..start();
         final stream = await callModel(history);
@@ -918,38 +1043,121 @@ class AetherCore {
           // Tools that were started mid-stream already have futures in streamingFutures.
           // For tools not yet started (Guardian mode or text-intercepted), execute now.
           final results = <ToolResult>[];
+          bool siblingAborted = false;
+
+          // Group adjacent requests into batches of safe and unsafe tools
+          final batches = <_AetherToolBatch>[];
           for (final req in pendingRequests) {
-            final preStartedFuture = streamingFutures[req.id];
-            if (preStartedFuture != null) {
-              // 🔱 Already executing since mid-stream! Just await the result.
-              _eventController.add({
-                'type': 'tool_progress',
-                'tool_name': req.name,
-                'tool_id': req.id,
-                'status': 'awaiting',
-                'command': req.params['command'] ?? '',
-              });
-              results.add(await preStartedFuture);
-              logger.d('🔱 [StreamExec] Collected pre-started result for ${req.name} (id: ${req.id})');
+            final isSafe = router.isConcurrencySafe(req.name);
+            if (batches.isNotEmpty && batches.last.isSafe && isSafe) {
+              batches.last.requests.add(req);
             } else {
-              // Execute normally (Guardian mode, or text-intercepted tools)
-              _eventController.add({
-                'type': 'tool_progress',
-                'tool_name': req.name,
-                'tool_id': req.id,
-                'status': 'executing',
-                'command': req.params['command'] ?? '',
-              });
-              results.add(await router.executeSingleTool(req));
+              batches.add(_AetherToolBatch(isSafe: isSafe, requests: [req]));
             }
-            // 🔱 Core Extraction: Progress event — tool completed
-            _eventController.add({
-              'type': 'tool_progress',
-              'tool_name': req.name,
-              'tool_id': req.id,
-              'status': 'done',
-              'duration_ms': toolExecStopwatch.elapsedMilliseconds,
-            });
+          }
+
+          // Execute each batch
+          for (final batch in batches) {
+            if (siblingAborted) {
+              // 🔱 Sibling Abort: cancel remaining tools
+              for (final req in batch.requests) {
+                results.add(ToolResult(
+                  toolUseId: req.id,
+                  content: 'Cancelled: a previous sibling tool in this batch errored.',
+                  isError: true,
+                  errorType: ToolErrorType.execution,
+                ));
+                _eventController.add({
+                  'type': 'tool_progress',
+                  'tool_name': req.name,
+                  'tool_id': req.id,
+                  'status': 'done',
+                  'duration_ms': toolExecStopwatch.elapsedMilliseconds,
+                });
+              }
+              continue;
+            }
+
+            if (batch.isSafe && batch.requests.length > 1) {
+              // Execute parallel batch
+              final futures = <Future<ToolResult>>[];
+              for (final req in batch.requests) {
+                final preStartedFuture = streamingFutures[req.id];
+                if (preStartedFuture != null) {
+                  _eventController.add({
+                    'type': 'tool_progress',
+                    'tool_name': req.name,
+                    'tool_id': req.id,
+                    'status': 'awaiting',
+                    'command': req.params['command'] ?? '',
+                  });
+                  futures.add(preStartedFuture);
+                } else {
+                  _eventController.add({
+                    'type': 'tool_progress',
+                    'tool_name': req.name,
+                    'tool_id': req.id,
+                    'status': 'executing',
+                    'command': req.params['command'] ?? '',
+                  });
+                  futures.add(router.executeSingleTool(req));
+                }
+              }
+
+              final batchResults = await Future.wait(futures);
+              results.addAll(batchResults);
+
+              // Emit done events
+              for (final req in batch.requests) {
+                _eventController.add({
+                  'type': 'tool_progress',
+                  'tool_name': req.name,
+                  'tool_id': req.id,
+                  'status': 'done',
+                  'duration_ms': toolExecStopwatch.elapsedMilliseconds,
+                });
+              }
+            } else {
+              // Execute sequential batch (usually contains just 1 unsafe tool, or sequential single tools)
+              for (final req in batch.requests) {
+                final preStartedFuture = streamingFutures[req.id];
+                ToolResult res;
+                if (preStartedFuture != null) {
+                  _eventController.add({
+                    'type': 'tool_progress',
+                    'tool_name': req.name,
+                    'tool_id': req.id,
+                    'status': 'awaiting',
+                    'command': req.params['command'] ?? '',
+                  });
+                  res = await preStartedFuture;
+                } else {
+                  _eventController.add({
+                    'type': 'tool_progress',
+                    'tool_name': req.name,
+                    'tool_id': req.id,
+                    'status': 'executing',
+                    'command': req.params['command'] ?? '',
+                  });
+                  res = await router.executeSingleTool(req);
+                }
+                results.add(res);
+
+                _eventController.add({
+                  'type': 'tool_progress',
+                  'tool_name': req.name,
+                  'tool_id': req.id,
+                  'status': 'done',
+                  'duration_ms': toolExecStopwatch.elapsedMilliseconds,
+                });
+
+                // 🔱 Sibling Abort Pattern
+                if (res.isError && req.name == 'bash') {
+                  siblingAborted = true;
+                  break;
+                }
+              }
+            }
           }
           streamingFutures.clear();
 
@@ -995,7 +1203,54 @@ class AetherCore {
             history.add(toolMsg);
           }
 
+          // 🔱 Supreme Verification Hook: Run auto-project-verification if files were modified
+          bool fileModified = pendingRequests.any((req) =>
+              req.name == 'file_write' ||
+              req.name == 'file_edit' ||
+              req.name == 'notebook_edit');
+
+          if (fileModified) {
+            logger.d('🔱 [Supreme Verification] File edits detected. Triggering auto-verification...');
+            _eventController.add({
+              'type': 'status',
+              'data': 'Verifying project changes...',
+            });
+
+            final verifyResult = await router.executeSingleTool(ToolRequest(
+              id: 'verify_auto_${DateTime.now().millisecondsSinceEpoch}',
+              name: 'verify_project',
+              params: {},
+            ));
+            hasUnresolvedErrors = verifyResult.isError;
+
+
+            _eventController.add({
+              'type': 'tool_result',
+              'tool_name': 'verify_project',
+              'data': verifyResult.content,
+              'is_error': verifyResult.isError,
+              'tool_id': verifyResult.toolUseId.isEmpty ? 'verify_auto' : verifyResult.toolUseId,
+              'params': <String, dynamic>{},
+              'turn': turnCount,
+              'duration': 0,
+              'is_read_only': true,
+            });
+
+            history.add(Message(
+              role: MessageRole.tool,
+              content: '🔱 [Auto-Verification Report]\n${verifyResult.content}',
+              toolUseId: verifyResult.toolUseId.isEmpty ? 'verify_auto' : verifyResult.toolUseId,
+              isError: verifyResult.isError,
+              metadata: {
+                'tool_name': 'verify_project',
+                'is_read_only': true,
+                'args': <String, dynamic>{},
+              },
+            ));
+          }
+
           consecutiveErrors = 0;
+
           // 🔱 Core Extraction: Track tool calls for session telemetry
           _sessionTotalToolCalls += results.length;
 
@@ -1145,8 +1400,22 @@ class AetherCore {
           continue; // Continue the agentic loop
         }
 
+        // 🔱 Supreme Critique: Block completion if compilation/lint errors are unresolved
+        if (hasUnresolvedErrors && critiqueCount < 2) {
+          critiqueCount++;
+          logger.w('🔱 [Supreme Critique] Model tried to stop but compilation/lint errors remain. Forcing self-correction (attempt $critiqueCount/2)...');
+          history.add(Message(
+            role: MessageRole.system,
+            content: '[CRITIQUE] You are attempting to finish the task, but there are unresolved compilation or lint errors in the project. You MUST fix these errors before you can stop. Review the previous auto-verification report and use file edit tools to write the necessary code fixes. Do not say you are done until all checks pass.',
+          ));
+          hasUnresolvedErrors = false; // Reset so next verification sets it
+          protocol.reset();
+          continue; // Force next turn instead of exiting
+        }
+
         _eventController.add({'type': 'final', 'data': purifiedText});
         break;
+
       } catch (e) {
         if (_cancelRequested) break;
 
@@ -1221,10 +1490,17 @@ class AetherCore {
 
     _eventController.add({'type': 'status', 'data': 'Thinking...'});
 
-    // 🔱 Core Extraction: SimpleChat gets SAME hardening as LetsDo
     compactor.microCompact(history);
-    await compactor.autoCompactIfNeeded(history, callModel, chatMode, sessionId: sessionId, eventController: _eventController);
-    compactor.trimHistory(history, chatMode);
+    await compactor.autoCompactIfNeeded(
+      history,
+      callModel,
+      chatMode,
+      sessionId: sessionId,
+      eventController: _eventController,
+      contextLimit: activeContextLimit,
+      isLocalMode: isLocalMode,
+    );
+    compactor.trimHistory(history, chatMode, contextLimit: activeContextLimit, isLocalMode: isLocalMode);
 
     // 🔱 Core Extraction: THINKING TOKEN STRIP
     // ThinkingTokens in history waste context space. Strip them
@@ -1496,15 +1772,20 @@ class AetherCore {
 
   void disposeInputAdapter(IInputAdapter adapter) {
     _cancelRequested = true;
+    _inputSubscription?.cancel();
+    _inputSubscription = null;
   }
 
   void dispose() {
     _cancelRequested = true;
+    _inputSubscription?.cancel();
+    _inputSubscription = null;
     _eventController.close();
   }
 
   /// 🔱 KHARWAL BUGFIX: Gemma 4 native tool arguments sometimes come wrapped
   /// in `<|"|>` tokens instead of raw strings. This strips them recursively.
+  // ignore: unused_element
   Map<String, dynamic> _sanitizeToolParams(Map<String, dynamic> params) {
     final sanitized = <String, dynamic>{};
     for (final entry in params.entries) {
@@ -1679,4 +1960,10 @@ class AetherCore {
       lastIdx = idx;
     }
   }
+}
+
+class _AetherToolBatch {
+  final bool isSafe;
+  final List<ToolRequest> requests;
+  _AetherToolBatch({required this.isSafe, required this.requests});
 }

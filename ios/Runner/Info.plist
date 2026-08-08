@@ -26,6 +26,10 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Apex Lite needs microphone access for voice input to the on-device AI.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Apex Lite needs camera access to capture photos for visual analysis by the on-device AI.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Apex Lite needs photo library access to select images for visual analysis by the on-device AI.</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>

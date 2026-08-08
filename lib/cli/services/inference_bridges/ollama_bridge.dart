@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:apex_lite/core/domain/entities/message.dart';
 import 'package:apex_lite/core/domain/entities/inference_event.dart';
 import 'package:apex_lite/core/domain/interfaces/i_tool.dart';
+import 'package:apex_lite/cli/services/api_call_radar.dart';
 
 /// 🔱 Ollama / Local Inference Bridge
 /// Supports Ollama's native tool calling format.
@@ -74,6 +75,7 @@ Future<Stream<InferenceEvent>> callLocalOllamaModel(
     }
 
     final response = await client.send(request);
+    ApiCallRadar.instance.record(category: ApiCallCategory.inference, method: 'POST', endpoint: 'ollama', source: 'ollama_bridge', statusCode: response.statusCode);
 
     if (response.statusCode != 200) {
       final errBody = await response.stream.transform(utf8.decoder).join();
@@ -83,7 +85,7 @@ Future<Stream<InferenceEvent>> callLocalOllamaModel(
       );
     }
 
-    response.stream
+    final subscription = response.stream
         .transform(utf8.decoder)
         .transform(const LineSplitter())
         .listen(
@@ -130,6 +132,11 @@ Future<Stream<InferenceEvent>> callLocalOllamaModel(
             client.close();
           },
         );
+
+    controller.onCancel = () {
+      subscription.cancel();
+      client.close();
+    };
   } catch (e) {
     controller.add(
       FatalErrorEvent(

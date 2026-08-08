@@ -1,51 +1,29 @@
+// ignore_for_file: avoid_print
+
 import 'dart:async';
 import 'dart:io';
 
 // 🔱 Clean Package-level Imports matching the Apex Lite architecture
+import 'package:apex_lite/core/domain/interfaces/i_tool.dart';
 import 'package:apex_lite/core/domain/entities/message.dart';
 import 'package:apex_lite/core/domain/entities/inference_event.dart';
 import 'package:apex_lite/core/domain/entities/protocol_mode.dart';
 import 'package:apex_lite/core/infrastructure/heartbeat/aether_core.dart';
 import 'package:apex_lite/core/infrastructure/router/agent_router.dart';
+import 'package:apex_lite/core/infrastructure/router/tool_registry.dart';
 import 'package:apex_lite/core/infrastructure/handshake/cipher_protocol.dart';
 import 'package:apex_lite/core/infrastructure/security/sentry_purity.dart';
 import 'package:apex_lite/core/infrastructure/tools/spectral_ops.dart';
-import 'package:apex_lite/core/infrastructure/tools/bash_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/directory_briefing_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/file_read_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/file_write_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/data_injector_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/notification_agent_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/voice_munshi_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/file_edit_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/glob_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/grep_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/web_search_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/web_fetch_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/agent_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/todo_write_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/task_tools.dart';
-import 'package:apex_lite/core/infrastructure/tools/send_message_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/brief_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/plan_mode_tools.dart';
-import 'package:apex_lite/core/infrastructure/services/plan_mode_coordinator.dart';
 import 'package:apex_lite/core/infrastructure/tools/ask_user_question_tool.dart';
 import 'package:apex_lite/core/infrastructure/tools/mcp_tools.dart';
-import 'package:apex_lite/core/infrastructure/tools/worktree_tools.dart';
 import 'package:apex_lite/core/infrastructure/tools/cron_tools.dart';
-import 'package:apex_lite/core/infrastructure/tools/team_tools.dart';
+import 'package:apex_lite/core/infrastructure/services/plan_mode_coordinator.dart';
 import 'package:apex_lite/core/infrastructure/services/swarm_team_manager.dart';
 import 'package:apex_lite/core/infrastructure/services/secret_guard_service.dart';
-import 'package:apex_lite/core/infrastructure/tools/notebook_edit_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/skill_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/lsp_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/config_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/sleep_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/tool_search_tool.dart';
-import 'package:apex_lite/core/infrastructure/tools/rollback_tool.dart';
 import 'package:apex_lite/core/infrastructure/prompts/kharwal_behavior.dart';
 import 'package:apex_lite/cli/terminal_forge.dart';
 import 'package:apex_lite/cli/theme/chrome_aura.dart';
+
 
 // 🔱 Newly extracted CLI modules
 import 'package:apex_lite/cli/cli_input_adapter.dart';
@@ -69,10 +47,12 @@ void main(List<String> args) async {
     } catch (_) {}
   }
 
+  // 🔱 TerminalForge — Supreme CLI Rendering Engine
+  final forge = TerminalForge();
+
   if (Platform.isLinux || Platform.isMacOS) {
     ProcessSignal.sigint.watch().listen((signal) {
-      restoreTerminal();
-      exit(0);
+      forge.handleInterrupt();
     });
     ProcessSignal.sigterm.watch().listen((signal) {
       restoreTerminal();
@@ -81,14 +61,10 @@ void main(List<String> args) async {
   } else {
     try {
       ProcessSignal.sigint.watch().listen((signal) {
-        restoreTerminal();
-        exit(0);
+        forge.handleInterrupt();
       });
     } catch (_) {}
   }
-
-  // 🔱 TerminalForge — Supreme CLI Rendering Engine
-  final forge = TerminalForge();
 
   final forceConfigure = args.contains('--configure') || args.contains('-c');
 
@@ -110,9 +86,6 @@ void main(List<String> args) async {
 
   // Display loaded pool in a beautiful table
   displayPoolTable(activePool);
-  print(
-    '${ChromeAura.mist}(To reconfigure at any time, run: dart bin/kharwal_cli.dart --configure)${ChromeAura.reset}\n',
-  );
 
   // 1. Setup a safe local workspace directory for CLI sandbox operations
   final sandboxPath = './apex_sandbox';
@@ -133,74 +106,24 @@ void main(List<String> args) async {
   McpRegistry.init(sandboxPath);
   CronRegistry.init(spectral);
 
-  // 3. Register all native tools (DataInjector only on macOS)
-  router.registerTool(BashTool(spectral));
-  router.registerTool(DirectoryBriefingTool(sandboxPath));
-  router.registerTool(FileReadTool(sandboxPath));
-  router.registerTool(FileWriteTool(sandboxPath));
-  if (Platform.isMacOS) {
-    router.registerTool(DataInjectorTool(spectral));
-  }
-  router.registerTool(NotificationAgentTool());
-  router.registerTool(VoiceMunshiTool());
-  router.registerTool(FileEditTool(sandboxPath));
-  router.registerTool(GlobTool(sandboxPath));
-  router.registerTool(GrepTool(sandboxPath));
-  router.registerTool(WebSearchTool());
-  router.registerTool(WebFetchTool());
-  router.registerTool(AgentTool(sandboxPath));
-  router.registerTool(TodoWriteTool(sandboxPath));
-  router.registerTool(TaskCreateTool(sandboxPath));
-  router.registerTool(TaskGetTool(sandboxPath));
-  router.registerTool(TaskUpdateTool(sandboxPath));
-  router.registerTool(TaskListTool(sandboxPath));
-  router.registerTool(TaskStopTool(sandboxPath));
-  router.registerTool(TaskOutputTool(sandboxPath));
-  router.registerTool(SendMessageTool(sandboxPath));
-  router.registerTool(BriefTool());
-  router.registerTool(EnterPlanModeTool());
-  router.registerTool(ExitPlanModeTool());
-  router.registerTool(AskUserQuestionTool());
+  // 3. 🔱 Register ALL tools via centralized ToolRegistry (eliminates DRY violation)
+  ToolRegistry.registerAll(
+    router,
+    sandboxPath: sandboxPath,
+    spectral: spectral,
+    isCli: true,
+  );
 
-  // Registrations for the 10 missing tools from the APEX TOOL PROTOCOL (bringing total tools to 35+ core/utilities)
-  router.registerTool(ListMcpResourcesTool());
-  router.registerTool(ReadMcpResourceTool());
-  router.registerTool(EnterWorktreeTool(spectral));
-  router.registerTool(ExitWorktreeTool(spectral));
-  router.registerTool(ScheduleCronTool());
-  router.registerTool(CronCreateTool());
-  router.registerTool(CronDeleteTool());
-  router.registerTool(CronListTool());
-  router.registerTool(TeamCreateTool(sandboxPath));
-  router.registerTool(TeamDeleteTool(sandboxPath));
-  router.registerTool(TeamJoinTool(sandboxPath));
-  router.registerTool(NotebookEditTool(sandboxPath));
-  router.registerTool(SkillTool(sandboxPath));
-  router.registerTool(LSPTool(sandboxPath));
-  router.registerTool(ConfigTool(sandboxPath));
-  router.registerTool(SleepTool());
-  router.registerTool(ToolSearchTool(() => router.registeredTools));
-  router.registerTool(SpectralRollbackTool(sandboxPath));
-
-  // Register dynamic MCP tools from the registry
-  for (final toolDef in McpRegistry.mcpTools.values) {
-    router.registerTool(McpToolAdapter(toolDef));
-  }
 
   runZoned(() async {
-    // 🔱 Ignite the TerminalForge with full luxury rendering
     final activeModel = activePool.isNotEmpty
         ? activePool.first.model
         : 'unknown';
     final activeProvider = activePool.isNotEmpty
         ? activePool.first.type
         : 'local';
-    forge.ignite(
-      modelName: activeModel,
-      provider: activeProvider,
-      toolNames: router.registeredTools.map((t) => t.name).toList(),
-      sandboxPath: sandboxPath,
-    );
+
+    late final AetherCore core;
 
     // 🔱 SUPREME WATERFALL FAILOVER SYSTEM
     // Intelligent multi-provider failover with health tracking,
@@ -226,7 +149,7 @@ void main(List<String> args) async {
       }
 
       if (foundLabels.isNotEmpty) {
-        print('\n⟨K⟩ [CHOWKIDAR] Intercepted & Redacted Secrets: ${foundLabels.join(", ")}');
+        forge.appendLog('  ${ChromeAura.phantom}⟨K⟩ [CHOWKIDAR] Intercepted & Redacted Secrets: ${foundLabels.join(", ")}${ChromeAura.reset}');
       }
 
       final totalChars = redactedHistory.fold<int>(0, (sum, msg) => sum + msg.content.length);
@@ -247,13 +170,17 @@ void main(List<String> args) async {
       String? lastError;
       final hasHealthy = activePool.any((p) => healthRegistry.isAvailable(p.type) && !healthRegistry.getRecord(p.type).isPermanentlyDisabled);
 
+      // 🔱 Keep heartbeat alive during waterfall — user sees spinner, not dead silence
+      forge.onStatus('Connecting to provider...');
+
       for (int i = 0; i < sortedPool.length; i++) {
         final provider = sortedPool[i];
 
         // Skip providers that are on cooldown ONLY if we have healthy alternatives
         if (hasHealthy && !healthRegistry.isAvailable(provider.type)) {
           final record = healthRegistry.getRecord(provider.type);
-          print('⟨K⟩ [Waterfall] Skipping ${provider.type.toUpperCase()} — ${record.statusLabel}');
+          forge.onStatus('Skipping ${provider.type.toUpperCase()} (cooldown)');
+          forge.appendLog('  ${ChromeAura.phantom}⟨K⟩ [Waterfall] Skipping ${provider.type.toUpperCase()} — ${record.statusLabel}${ChromeAura.reset}');
           continue;
         }
 
@@ -263,33 +190,42 @@ void main(List<String> args) async {
           providerType: provider.type,
         );
 
-        final allowedToolNames = router.activeAllowedTools;
-        var activeToolsList = allowedToolNames == null
-            ? router.registeredTools
-            : router.registeredTools.where((t) => allowedToolNames.contains(t.name)).toList();
+        final isCompactionPrompt = history.isNotEmpty &&
+            history.any((m) => m.content.contains('Summarize this conversation in a structured handbook format.'));
+        final isDreamPrompt = history.isNotEmpty &&
+            history.any((m) => m.content.contains('You are the Memory Consolidator agent.'));
 
-        // 🔱 Cognitive Optimization for Local Ollama & Custom Providers
-        // Small local models get heavily overwhelmed by 50+ tool schemas (46 tools + MCPs).
-        // This causes long prefill latencies, context window exhaustion, and reasoning failures.
-        // We restrict local/custom models to the essential developer tool suite (~10 core tools)
-        // when no specific allowed tools are requested.
-        if (allowedToolNames == null &&
-            (provider.type == 'ollama' ||
-             provider.type == 'custom' ||
-             provider.type.startsWith('custom'))) {
-          const essentialTools = {
-            'bash',
-            'file_read',
-            'file_write',
-            'file_edit',
-            'directory_briefing',
-            'glob',
-            'grep',
-            'ask_user_question',
-            'enter_plan_mode',
-            'exit_plan_mode',
-          };
-          activeToolsList = activeToolsList.where((t) => essentialTools.contains(t.name)).toList();
+        final allowedToolNames = router.activeAllowedTools;
+        var activeToolsList = <ITool>[];
+
+        if (!isCompactionPrompt && !isDreamPrompt) {
+          activeToolsList = allowedToolNames == null
+              ? router.getActiveTools()
+              : router.getActiveTools().where((t) => allowedToolNames.contains(t.name)).toList();
+
+          // 🔱 Cognitive Optimization for Local Ollama & Custom Providers
+          // Small local models get heavily overwhelmed by 50+ tool schemas (46 tools + MCPs).
+          // This causes long prefill latencies, context window exhaustion, and reasoning failures.
+          // We restrict local/custom models to the essential developer tool suite (~10 core tools)
+          // when no specific allowed tools are requested.
+          if (allowedToolNames == null &&
+              (provider.type == 'ollama' ||
+               provider.type == 'custom' ||
+               provider.type.startsWith('custom'))) {
+            const essentialTools = {
+              'bash',
+              'file_read',
+              'file_write',
+              'file_edit',
+              'directory_briefing',
+              'glob',
+              'grep',
+              'ask_user_question',
+              'enter_plan_mode',
+              'exit_plan_mode',
+            };
+            activeToolsList = activeToolsList.where((t) => essentialTools.contains(t.name)).toList();
+          }
         }
 
         FailureClassification? lastClassification;
@@ -301,8 +237,37 @@ void main(List<String> args) async {
         for (final targetModel in modelsToTry) {
           lastAttemptedModel = targetModel;
           try {
+            // 🔱 Sync context limits and execution mode dynamically
+            final isLocal = provider.type == 'local' || provider.type == 'ollama' || provider.type.startsWith('custom_local');
+            core.isLocalMode = isLocal;
+            if (provider.contextLimit != null) {
+              core.activeContextLimit = provider.contextLimit!;
+            } else {
+              final modelLower = targetModel.toLowerCase();
+              if (modelLower.contains('1m') || modelLower.contains('2m') || modelLower.contains('gemini')) {
+                core.activeContextLimit = 1000000;
+              } else if (modelLower.contains('128k') ||
+                         modelLower.contains('llama-3.1') ||
+                         modelLower.contains('llama-3.3') ||
+                         modelLower.contains('nemotron') ||
+                         modelLower.contains('qwen')) {
+                core.activeContextLimit = 131072;
+              } else if (modelLower.contains('32k') || modelLower.contains('gemma')) {
+                core.activeContextLimit = 32768;
+              } else if (modelLower.contains('8k')) {
+                core.activeContextLimit = 8192;
+              } else {
+                core.activeContextLimit = isLocal ? 8192 : 32768;
+              }
+            }
+            if (isLocal && core.activeContextLimit > 8192) {
+              core.activeContextLimit = 8192; // RAM safe ceiling
+            }
+
+            // 🔱 Live heartbeat status — user sees exactly what's happening
+            forge.onStatus('${provider.type.toUpperCase()} → $targetModel');
             if (modelsToTry.length > 1) {
-              print('⟨K⟩ [Waterfall] Attempting ${provider.type.toUpperCase()} with model: $targetModel');
+              forge.appendLog('  ${ChromeAura.phantom}⟨K⟩ [Waterfall] Attempting ${provider.type.toUpperCase()} with model: $targetModel${ChromeAura.reset}');
             }
 
             if (provider.type == 'gemini') {
@@ -359,7 +324,7 @@ void main(List<String> args) async {
                     retries++;
                     if (retries < maxOllamaRetries) {
                       final delaySecs = retries * 4;
-                      print('\n⟨K⟩ [Ollama] Model runner stopped or loading. Retrying in ${delaySecs}s to allow auto-restart (attempt $retries/$maxOllamaRetries)...');
+                      forge.appendLog('  ${ChromeAura.celestial}⟨K⟩ [Ollama] Model runner stopped or loading. Retrying in ${delaySecs}s (attempt $retries/$maxOllamaRetries)...${ChromeAura.reset}');
                       await Future.delayed(Duration(seconds: delaySecs));
                       continue;
                     }
@@ -392,7 +357,8 @@ void main(List<String> args) async {
               return wrappedStream;
             }
           } catch (e) {
-            print('⟨K⟩ [Waterfall] Model $targetModel failed on ${provider.type.toUpperCase()}: $e');
+            forge.onStatus('${provider.type.toUpperCase()} failed, recovering...');
+            forge.appendLog('  ${ChromeAura.wrath}⟨K⟩ [Waterfall] Model $targetModel failed on ${provider.type.toUpperCase()}: $e${ChromeAura.reset}');
             providerError = e.toString();
             final classification = ProviderHealthRegistry.classifyError(provider.type, e);
             lastClassification = classification;
@@ -406,11 +372,12 @@ void main(List<String> args) async {
             );
 
             if (classification.type == FailureType.contextOverflow) {
-              print('\n⟨K⟩ [Waterfall] Context window overflow detected! Triggering inline memory compaction...');
+              forge.onStatus('Compacting memory...');
+              forge.appendLog('  ${ChromeAura.celestial}⟨K⟩ [Waterfall] Context window overflow! Triggering memory compaction...${ChromeAura.reset}');
               final compactor = AetherHistoryCompactor();
               final dummyController = StreamController<Map<String, dynamic>>()..stream.listen((event) {
                 if (event['type'] == 'status') {
-                  print('⟨K⟩ [Waterfall] Compaction: ${event['data']}');
+                  forge.appendLog('  ${ChromeAura.phantom}⟨K⟩ [Waterfall] Compaction: ${event['data']}${ChromeAura.reset}');
                 }
               });
               
@@ -423,7 +390,8 @@ void main(List<String> args) async {
               await dummyController.close();
               
               if (compacted) {
-                print('⟨K⟩ [Waterfall] Compaction completed successfully. Retrying request with compressed context...');
+                forge.onStatus('Compaction done, retrying...');
+                forge.appendLog('  ${ChromeAura.sanctum}⟨K⟩ [Waterfall] Compaction success. Retrying with compressed context...${ChromeAura.reset}');
                 return await callModel(history);
               }
             }
@@ -449,6 +417,7 @@ void main(List<String> args) async {
 
           if (nextAvailable != null) {
             // Show smart failover event in UI
+            forge.onStatus('Switching to ${nextAvailable.type.toUpperCase()}...');
             final record = healthRegistry.getRecord(provider.type);
             forge.onSmartFailover(
               fromProvider: provider.type,
@@ -460,12 +429,13 @@ void main(List<String> args) async {
             );
           } else {
             // This was the last available provider
-            print('⟨K⟩ [Waterfall] ${provider.type.toUpperCase()} failed: ${classification.reason}');
+            forge.appendLog('  ${ChromeAura.wrath}⟨K⟩ [Waterfall] ${provider.type.toUpperCase()} failed: ${classification.reason}${ChromeAura.reset}');
           }
         }
       }
 
       // Phase 4: ALL PROVIDERS FAILED — show detailed dashboard
+      forge.onStatus('All providers exhausted — awaiting new task');
       forge.onAllProvidersFailed(healthRegistry.getHealthSummary());
       throw Exception('Supreme Waterfall: All ${activePool.length} providers exhausted. Last error: $lastError');
     }
@@ -525,7 +495,7 @@ void main(List<String> args) async {
       await sessionManager.saveCurrentSession();
     }
 
-    final core = AetherCore(
+    core = AetherCore(
       router: router,
       protocol: protocol,
       mode: ProtocolMode.semi,
@@ -597,6 +567,14 @@ void main(List<String> args) async {
 
     await pluginLoader.loadPlugins();
 
+    // 🔱 Ignite the TerminalForge TUI *after* all plugins have finished loading and logging
+    forge.ignite(
+      modelName: activeModel,
+      provider: activeProvider,
+      toolNames: router.registeredTools.map((t) => t.name).toList(),
+      sandboxPath: sandboxPath,
+    );
+
     forge.bindExecutionContext(
       core: core,
       history: history,
@@ -605,8 +583,8 @@ void main(List<String> args) async {
 
     // 🔱 Route all AetherCore events through TerminalForge
     // State trackers for tool correlation
-    String? _lastToolName;
-    Map<String, dynamic>? _lastToolParams;
+    String? lastToolName;
+    Map<String, dynamic>? lastToolParams;
 
     final chunkScrubber = ApexStreamingThoughtScrubber();
     final thoughtScrubber = ApexStreamingThoughtScrubber();
@@ -631,19 +609,19 @@ void main(List<String> args) async {
           break;
 
         case 'tool_start':
-          _lastToolName = event['tool_name']?.toString() ?? 'unknown';
+          lastToolName = event['tool_name']?.toString() ?? 'unknown';
           final rawParams = event['params'];
-          _lastToolParams = rawParams is Map<String, dynamic>
+          lastToolParams = rawParams is Map<String, dynamic>
               ? rawParams
               : {'raw': rawParams.toString()};
-          forge.onToolStart(_lastToolName!, _lastToolParams!);
+          forge.onToolStart(lastToolName!, lastToolParams!);
           break;
 
         case 'tool_result':
           final isError = event['is_error'] as bool? ?? false;
           forge.onToolResult(
-            _lastToolName ?? 'unknown',
-            _lastToolParams ?? {},
+            lastToolName ?? 'unknown',
+            lastToolParams ?? {},
             data.toString(),
             isError,
           );
@@ -659,6 +637,10 @@ void main(List<String> args) async {
 
         case 'status':
           forge.onStatus(data.toString());
+          break;
+
+        case 'log':
+          forge.appendLog(data.toString());
           break;
 
 

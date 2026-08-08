@@ -1,11 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'package:http/http.dart' as http;
 
 import 'package:apex_lite/core/domain/entities/message.dart';
 import 'package:apex_lite/core/domain/entities/inference_event.dart';
 import 'package:apex_lite/core/domain/interfaces/i_tool.dart';
+import 'package:apex_lite/cli/services/api_call_radar.dart';
 
 /// 🔱 Generic OpenAI-Compatible Custom Cloud Inference Bridge
 /// Connects AetherCore directly to any custom user-added OpenAI-compatible endpoints.
@@ -109,6 +109,7 @@ Future<Stream<InferenceEvent>> callGenericOpenAIModel(
 
       try {
         final response = await currentClient.send(request).timeout(const Duration(seconds: 15));
+        ApiCallRadar.instance.record(category: ApiCallCategory.inference, method: 'POST', endpoint: 'custom', source: 'custom_bridge', statusCode: response.statusCode);
 
         if (response.statusCode == 429) {
           final errBody = await response.stream.transform(utf8.decoder).join();
@@ -147,7 +148,7 @@ Future<Stream<InferenceEvent>> callGenericOpenAIModel(
 
     final Map<int, Map<String, String>> toolCallAccumulator = {};
 
-    activeResponse.stream
+    final subscription = activeResponse.stream
         .transform(utf8.decoder)
         .transform(const LineSplitter())
         .listen(
@@ -256,6 +257,11 @@ Future<Stream<InferenceEvent>> callGenericOpenAIModel(
           },
           cancelOnError: true,
         );
+
+    controller.onCancel = () {
+      subscription.cancel();
+      activeClient?.close();
+    };
   } catch (e) {
     controller.addError(e);
     controller.close();

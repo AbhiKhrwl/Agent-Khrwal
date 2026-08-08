@@ -472,17 +472,21 @@ Future<List<ProviderConfig>> runSetupWizard() async {
   return pool;
 }
 
-/// 🔱 Render configured pool beautifully in terminal
+/// 🔱 Render configured pool in premium double-bordered table
 void displayPoolTable(List<ProviderConfig> pool) {
-  print(
-    '\n\x1B[36m┌──────────┬──────────┬─────────────────────────────┬────────┐\x1B[0m',
-  );
-  print(
-    '\x1B[36m│\x1B[0m Priority \x1B[36m│\x1B[0m Provider \x1B[36m│\x1B[0m Model                       \x1B[36m│\x1B[0m Status \x1B[36m│\x1B[0m',
-  );
-  print(
-    '\x1B[36m├──────────┼──────────┼─────────────────────────────┼────────┤\x1B[0m',
-  );
+  const c = '\x1B[38;2;192;192;192m'; // chrome
+  const t = '\x1B[38;2;0;255;242m';   // trident
+  const o = '\x1B[38;2;220;220;225m'; // oracle
+  const s = '\x1B[38;2;0;255;65m';    // sanctum
+  const m = '\x1B[38;2;108;112;122m'; // mist
+  const b = '\x1B[1m';                // bold
+  const r = '\x1B[0m';                // reset
+
+  print('');
+  print('  ${c}╔══════════╦══════════╦═════════════════════════════╦══════════╗$r');
+  print('  ${c}║$r$b$t PRIORITY $r${c}║$r$b$t PROVIDER $r${c}║$r$b$t MODEL                       $r${c}║$r$b$t STATUS   $r${c}║$r');
+  print('  ${c}╠══════════╬══════════╬═════════════════════════════╬══════════╣$r');
+
   for (int i = 0; i < pool.length; i++) {
     final provider = pool[i];
     final priority = '#${i + 1}'.padRight(8);
@@ -490,12 +494,16 @@ void displayPoolTable(List<ProviderConfig> pool) {
     final model = provider.model.length > 27
         ? '${provider.model.substring(0, 24)}...'
         : provider.model.padRight(27);
-    final status = (i == 0 ? '✅Active' : '🛡️Backup').padRight(8);
-    print(
-      '\x1B[36m│\x1B[0m $priority \x1B[36m│\x1B[0m $type \x1B[36m│\x1B[0m $model \x1B[36m│\x1B[0m $status\x1B[36m│\x1B[0m',
-    );
+    
+    final isActive = i == 0;
+    final statusText = isActive ? '${s}▶ Active $r' : '${m}· Backup$r';
+    final priorityColor = isActive ? '$b$t' : o;
+    final modelColor = isActive ? '$b$o' : m;
+    
+    print('  ${c}║$r $priorityColor$priority$r ${c}║$r $o$type$r ${c}║$r $modelColor$model$r ${c}║$r $statusText ${c}║$r');
   }
-  print(
-    '\x1B[36m└──────────┴──────────┴─────────────────────────────┴────────┘\x1B[0m',
-  );
+
+  print('  ${c}╚══════════╩══════════╩═════════════════════════════╩══════════╝$r');
+  print('  ${m}(To reconfigure at any time, run: dart bin/kharwal_cli.dart --configure)$r');
 }
+

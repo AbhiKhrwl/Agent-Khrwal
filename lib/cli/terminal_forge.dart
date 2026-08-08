@@ -34,6 +34,8 @@ abstract class ITerminalInputAdapter {
   int get selectedSuggestionIndex;
 
   bool get vimModeEnabled => true;
+  void handleInterrupt();
+  String getCommandDescription(String cmdName);
 }
 
 class TerminalForge {
@@ -42,6 +44,19 @@ class TerminalForge {
   late final DoubleBufferedScreen screen;
   final VirtualConsoleList logs = VirtualConsoleList();
   late final DivineSoulTelemetry telemetry;
+
+  bool isScrollingMode = true;
+  bool _ignited = false;
+  int _printedLogsLength = 0;
+  int _lastTotalEphemeralLines = 0;
+  int _lastPrintedBlockLines = 0;
+  int _promptLinesCount = 1;
+  int _windowStartLine = 0;
+  int _promptScrollOffset = 0;
+  bool _promptHasScrollIndicator = false;
+  int _lastVisibleCursorLine = 0;
+  int _promptPrefixLen = 14;
+  Timer? _resizeTimer;
 
   int _inputTokens = 0;
   int _outputTokens = 0;
@@ -166,21 +181,49 @@ class TerminalForge {
     screen.resize(viewport.columns, viewport.rows);
     logs.handleResize(logWidth);
 
-    // Switch to alternate screen buffer, hide cursor, clear terminal screen
-    stdout.write('${ChromeAura.alternateScreenBufferOn}${ChromeAura.hideCursor}');
+    if (isScrollingMode) {
+      _printWelcomeBanner();
+      
+      viewport.onResize.listen((dim) {
+        _resizeTimer?.cancel();
+        _resizeTimer = Timer(const Duration(milliseconds: 50), () {
+          final w = dim.columns;
+          logs.handleResize(w);
+          _calculatePromptLayout(w);
+
+          // Push old viewport content up to scrollback history
+          stdout.write('\n' * dim.rows);
+          stdout.write('\x1b[H\x1b[J');
+
+          _lastTotalEphemeralLines = 0;
+          _lastPrintedBlockLines = 0;
+          _lastVisibleCursorLine = 0;
+
+          final isActivelyGenerating = _responseStart != null;
+          final finalizedLinesCount = isActivelyGenerating
+              ? logs.wrappedLines.length - logs.lastLogWrappedCount
+              : logs.wrappedLines.length;
+          _printedLogsLength = finalizedLinesCount;
+
+          _printWelcomeBanner();
+          _redraw();
+        });
+      });
+    } else {
+      stdout.write('${ChromeAura.alternateScreenBufferOn}${ChromeAura.hideCursor}');
+      
+      viewport.onResize.listen((dim) {
+        stdout.write(ChromeAura.clearScreen); // Blank the physical screen
+        screen.resize(dim.columns, dim.rows);
+        screen.reset(); // Force full redraw of double buffer
+        logs.handleResize(logWidth);
+        DivineWeaverCacher.clear(); // Clear cache on layout reflow
+        _redraw();
+      });
+    }
 
     // Clean log history
     logs.clear();
-
-    // Setup SIGWINCH resize listener to reflow layouts immediately
-    viewport.onResize.listen((dim) {
-      stdout.write(ChromeAura.clearScreen); // Blank the physical screen
-      screen.resize(dim.columns, dim.rows);
-      screen.reset(); // Force full redraw of double buffer
-      logs.handleResize(logWidth);
-      DivineWeaverCacher.clear(); // Clear cache on layout reflow
-      _redraw();
-    });
 
     // Run the TUI draw loop at 10Hz (100ms ticks) to keep spinners and timers animated
     _animTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
@@ -198,11 +241,11 @@ class TerminalForge {
     // Gracefully handle Ctrl+C signal on desktop terminals to restore terminal buffer before termination
     if (!Platform.isWindows) {
       ProcessSignal.sigint.watch().listen((_) {
-        dispose();
-        exit(0);
+        handleInterrupt();
       });
     }
 
+    _ignited = true;
     _redraw();
   }
 
@@ -211,9 +254,15 @@ class TerminalForge {
   }
 
   void _redraw() {
+    if (!_ignited) return;
     _needsRedraw = false;
     final h = viewport.rows;
     if (h < 17) return; // Keep rendering safe on very small terminal heights (banner=12 + status=3 + prompt=1 + 1)
+
+    if (isScrollingMode) {
+      _redrawScrollable();
+      return;
+    }
 
     final startTime = DateTime.now();
 
@@ -371,7 +420,7 @@ class TerminalForge {
   }
 
   void _drawCrownBannerToBuffer() {
-    final w = viewport.innerWidth;
+    final w = viewport.columns.clamp(40, 80);
     final borderColor = _themeColor;
 
     // ═══ AETHER SUPREME BANNER LAYOUT ═══
@@ -391,13 +440,13 @@ class TerminalForge {
     //  ╚───────────────────────────────────────────────────────────╝
 
     final rightColWidth = 34;
-    final leftColWidth = w - rightColWidth - 1; // -1 for divider
+    final leftColWidth = (w - rightColWidth - 5).clamp(10, 500);
 
     // Row 0: Top border with centered title
     final title = ' Agent Kharwal v1.0 ';
     final titleLen = title.length;
-    final borderLeft = (w - titleLen) ~/ 2;
-    final borderRight = w - titleLen - borderLeft;
+    final borderLeft = (w - titleLen - 4) ~/ 2;
+    final borderRight = w - titleLen - 4 - borderLeft;
     screen.write(2, 0,
         '${ChromeAura.heavyCornerTL}'
         '${ChromeAura.heavyH * borderLeft}'
@@ -482,7 +531,7 @@ class TerminalForge {
         '');
 
     // Row 11: Bottom border
-    screen.write(2, 11, '${ChromeAura.heavyCornerBL}${ChromeAura.heavyH * w}${ChromeAura.heavyCornerBR}', borderColor);
+    screen.write(2, 11, '${ChromeAura.heavyCornerBL}${ChromeAura.heavyH * (w - 4)}${ChromeAura.heavyCornerBR}', borderColor);
   }
 
   void _drawStatusStripToBuffer(int h) {
@@ -830,8 +879,18 @@ class TerminalForge {
       }
     }
 
-    final woven = DivineWeaverCacher.weave(response, logWidth);
-    logs.updateLastLog(woven, logWidth);
+    // 🔱 Avoid duplicate rendering if the streamed response matches final response exactly
+    final cleanResponse = response.trim();
+    final cleanAccumulated = _currentResponseBuffer.trim();
+    if (cleanAccumulated.isNotEmpty && cleanResponse == cleanAccumulated) {
+      // The streamed response is already identical and fully rendered in the last log block.
+      // Skipping updateLastLog avoids TUI redraw race conditions and duplicate printing.
+    } else {
+      final woven = DivineWeaverCacher.weave(response, logWidth);
+      logs.updateLastLog(woven, logWidth);
+    }
+
+    _currentResponseBuffer = '';
     _responseStart = null;
     _needsRedraw = true;
   }
@@ -936,6 +995,15 @@ class TerminalForge {
     buffer.write('  ${ChromeAura.wrath}${ChromeAura.bold}╚═════════════════════════════════════════════════════════╝${ChromeAura.reset}');
 
     logs.appendLog(buffer.toString(), logWidth);
+    _needsRedraw = true;
+  }
+
+  void appendLogSafe(String log) {
+    if (_isThinking || _responseStart != null) {
+      logs.insertLogBeforeLast(log, logWidth);
+    } else {
+      logs.appendLog(log, logWidth);
+    }
     _needsRedraw = true;
   }
 
@@ -1046,11 +1114,398 @@ class TerminalForge {
 
   void dispose() {
     _animTimer?.cancel();
+    _resizeTimer?.cancel();
     heartbeat.stop();
     viewport.dispose();
     telemetry.dispose();
-    // Disable SGR mouse tracking before restoring terminal
-    stdout.write('\x1b[?1002l\x1b[?1006l');
-    stdout.write('${ChromeAura.alternateScreenBufferOff}${ChromeAura.showCursor}');
+    if (!isScrollingMode) {
+      // Disable SGR mouse tracking before restoring terminal
+      stdout.write('\x1b[?1002l\x1b[?1006l');
+      stdout.write('${ChromeAura.alternateScreenBufferOff}${ChromeAura.showCursor}');
+    } else {
+      stdout.write(ChromeAura.showCursor);
+    }
+  }
+
+  void handleInterrupt() {
+    adapter?.handleInterrupt();
+  }
+
+  int get promptAvailableWidth {
+    final w = viewport.columns;
+    String modePrefix = '';
+    if (adapter != null) {
+      final mode = adapter!.mode;
+      final vimEnabled = adapter!.vimModeEnabled;
+      if (mode == VimMode.insert) {
+        modePrefix = ' ${ChromeAura.modeBadge(vimEnabled ? 'INSERT' : 'STANDARD', ChromeAura.bgTrident)} ';
+      } else if (mode == VimMode.command) {
+        modePrefix = ' ${ChromeAura.modeBadge('COMMAND', ChromeAura.bgPhantom)} :';
+      } else if (mode == VimMode.question) {
+        modePrefix = ' ${ChromeAura.modeBadge('QUESTION', ChromeAura.bgEmber)} ';
+      } else {
+        modePrefix = ' ${ChromeAura.modeBadge('NORMAL', ChromeAura.bgChrome)} ';
+      }
+    }
+    final promptPrefix = '  ${ChromeAura.trident}${ChromeAura.logoInline}${ChromeAura.reset}$modePrefix';
+    return (w - _visibleLength(promptPrefix)).clamp(10, 1000);
+  }
+
+  void _printWelcomeBanner() {
+    final w = viewport.columns.clamp(40, 80);
+    final borderColor = _themeColor;
+    final rightColWidth = 34;
+    final leftColWidth = (w - rightColWidth - 5).clamp(10, 500);
+
+    final title = ' Agent Kharwal v1.0 ';
+    final titleLen = title.length;
+    final borderLeft = (w - titleLen - 4) ~/ 2;
+    final borderRight = w - titleLen - 4 - borderLeft;
+
+    stdout.writeln(
+        '  $borderColor${ChromeAura.heavyCornerTL}'
+        '${ChromeAura.heavyH * borderLeft}'
+        '${ChromeAura.mist}$title${ChromeAura.reset}'
+        '$borderColor${ChromeAura.heavyH * borderRight}'
+        '${ChromeAura.heavyCornerTR}${ChromeAura.reset}');
+
+    void bannerRow(String leftContent, String rightContent) {
+      final leftVis = _visibleLength(leftContent);
+      final rightVis = _visibleLength(rightContent);
+      final leftPad = leftColWidth - leftVis;
+      final rightPad = rightColWidth - rightVis;
+      stdout.writeln(
+          '  $borderColor${ChromeAura.heavyV}${ChromeAura.reset} '
+          '$leftContent${' ' * leftPad.clamp(0, 200)}'
+          '${ChromeAura.mist}${ChromeAura.vLine}${ChromeAura.reset} '
+          '$rightContent${' ' * rightPad.clamp(0, 200)} '
+          '$borderColor${ChromeAura.heavyV}${ChromeAura.reset}');
+    }
+
+    final welcomePad = (leftColWidth - 13) ~/ 2;
+    final welcomePrefix = ' ' * welcomePad.clamp(1, 200);
+
+    bannerRow('', 'Tips for getting started');
+    bannerRow('$welcomePrefix${ChromeAura.bold}Welcome back!${ChromeAura.reset}', '/help to see all commands');
+    bannerRow('', '${ChromeAura.hLine * (rightColWidth - 2)}');
+
+    final logo = ChromeAura.logoAscii;
+    final logoPad = (leftColWidth - 9) ~/ 2;
+    final logoPrefix = ' ' * logoPad.clamp(1, 200);
+
+    bannerRow('$logoPrefix${ChromeAura.trident}${logo[0]}${ChromeAura.reset}', 'What\'s new');
+    bannerRow('$logoPrefix${ChromeAura.trident}${logo[1]}${ChromeAura.reset}', 'Web tools now sandbox-safe');
+    bannerRow('$logoPrefix${ChromeAura.trident}${logo[2]}${ChromeAura.reset}', 'Pixel art mascot added');
+    bannerRow('$logoPrefix${ChromeAura.trident}${logo[3]}${ChromeAura.reset}', 'Premium heavy-border UI');
+    bannerRow('$logoPrefix${ChromeAura.trident}${logo[4]}${ChromeAura.reset}', '/tools for full arsenal');
+
+    final modelStr = ' $_activeModel ${ChromeAura.dot} ${_activeProvider.toUpperCase()}';
+    final sandStr = ' $_sandboxPath';
+    bannerRow(' ${ChromeAura.mist}$modelStr${ChromeAura.reset}', '${_toolNames.length} tools armed');
+    bannerRow(' ${ChromeAura.mist}$sandStr${ChromeAura.reset}', '');
+
+    stdout.writeln('  $borderColor${ChromeAura.heavyCornerBL}${ChromeAura.heavyH * (w - 4)}${ChromeAura.heavyCornerBR}${ChromeAura.reset}');
+  }
+
+  void _calculatePromptLayout(int w) {
+    String modePrefix = '';
+    String textContent = '';
+
+    if (adapter != null) {
+      final mode = adapter!.mode;
+      final vimEnabled = adapter!.vimModeEnabled;
+      if (mode == VimMode.insert) {
+        modePrefix = ' ${ChromeAura.modeBadge(vimEnabled ? 'INSERT' : 'STANDARD', ChromeAura.bgTrident)} ';
+        textContent = adapter!.promptBuffer;
+      } else if (mode == VimMode.command) {
+        modePrefix = ' ${ChromeAura.modeBadge('COMMAND', ChromeAura.bgPhantom)} :';
+        textContent = adapter!.commandBuffer;
+      } else if (mode == VimMode.question) {
+        modePrefix = ' ${ChromeAura.modeBadge('QUESTION', ChromeAura.bgEmber)} ';
+        textContent = adapter!.promptBuffer;
+      } else {
+        modePrefix = ' ${ChromeAura.modeBadge('NORMAL', ChromeAura.bgChrome)} ';
+        textContent = '(Press i to type, : for commands)';
+      }
+    }
+
+    final promptPrefix = '  ${ChromeAura.trident}${ChromeAura.logoInline}${ChromeAura.reset}$modePrefix';
+    _promptPrefixLen = _visibleLength(promptPrefix);
+    final availW = (w - _promptPrefixLen).clamp(10, 1000);
+
+    final totalWrappedLines = (textContent.length / availW).ceil().clamp(1, 999);
+    _promptLinesCount = totalWrappedLines;
+
+    // Position typing window sliding bounds
+    if (adapter != null) {
+      final mode = adapter!.mode;
+      int cursorIdx = 0;
+      if (mode == VimMode.command) {
+        cursorIdx = adapter!.commandBuffer.length;
+      } else if (mode != VimMode.normal) {
+        cursorIdx = adapter!.cursorIndex;
+      }
+      final cursorLineIdx = (cursorIdx / availW).floor();
+      _lastVisibleCursorLine = cursorLineIdx - _windowStartLine;
+    }
+  }
+
+  void _redrawScrollable() {
+    final startTime = DateTime.now();
+    final w = viewport.columns;
+
+    _calculatePromptLayout(w);
+
+    final isActivelyGenerating = _responseStart != null;
+    final finalizedLinesCount = isActivelyGenerating
+        ? logs.wrappedLines.length - logs.lastLogWrappedCount
+        : logs.wrappedLines.length;
+
+    // 1. Move cursor up and clear the previous ephemeral block
+    if (_lastTotalEphemeralLines > 0) {
+      stdout.write('\x1b[${_lastTotalEphemeralLines}A\r');
+      stdout.write('\x1b[J');
+    } else {
+      stdout.write('\r\x1b[J');
+    }
+
+    // 2. Print newly finalized log lines
+    if (finalizedLinesCount > _printedLogsLength) {
+      for (int i = _printedLogsLength; i < finalizedLinesCount; i++) {
+        stdout.writeln(logs.wrappedLines[i]);
+      }
+      _printedLogsLength = finalizedLinesCount;
+    }
+
+    // 3. Print the active generation log block if streaming
+    //    Use \x1b[K (Erase in Line) before \n to prevent terminal auto-wrap
+    //    from creating phantom ghost lines when content fills exactly w columns.
+    int activeBlockLines = 0;
+    if (isActivelyGenerating) {
+      final start = logs.wrappedLines.length - logs.lastLogWrappedCount;
+      for (int i = start; i < logs.wrappedLines.length; i++) {
+        stdout.write('${logs.wrappedLines[i]}\x1b[K\n');
+      }
+      activeBlockLines = logs.lastLogWrappedCount;
+    }
+    _lastPrintedBlockLines = activeBlockLines;
+
+    // Update telemetry metrics before rendering status bar
+    telemetry.updateMetrics(
+      sessionCost: _sessionCost,
+      totalTokens: _inputTokens + _outputTokens,
+      activeTool: heartbeat.isAlive ? heartbeat.activeLabel : '',
+      toolsCount: _toolsExecuted,
+      isThinking: heartbeat.isAlive,
+      statusMessage: heartbeat.activeLabel,
+      currentMode: adapter?.mode,
+    );
+
+    // 4. Render status bar strip
+    //    Use \x1b[K\n instead of writeln to prevent auto-wrap ghost lines.
+    final themeColor = _themeColor;
+    stdout.write('  $themeColor${ChromeAura.teeLeft}${ChromeAura.hLine * (w - 5)}${ChromeAura.teeRight}${ChromeAura.reset}\x1b[K\n');
+
+    final providerColor = _providerAura();
+    final truncModel = _activeModel.length > 20 ? '${_activeModel.substring(0, 17)}...' : _activeModel;
+    final section1 = '$providerColor${_activeProvider.toUpperCase()}${ChromeAura.reset} ${ChromeAura.chrome}$truncModel${ChromeAura.reset}';
+    final satMeter = _contextMeter(_contextPercent);
+    final section2 = '${ChromeAura.mist}$_toolsExecuted tools${ChromeAura.reset}';
+    final elapsedSecs = _responseStart != null ? DateTime.now().difference(_responseStart!).inMilliseconds / 1000.0 : 0.0;
+    final section3 = '${ChromeAura.mist}${elapsedSecs.toStringAsFixed(1)}s${ChromeAura.reset}';
+
+    String activityStr = ' ${ChromeAura.mist}😴 Idle${ChromeAura.reset}';
+    if (heartbeat.isAlive) {
+      final glyphs = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+      final glyph = glyphs[_animTick % glyphs.length];
+      final elapsed = heartbeat.elapsed;
+      final String aura;
+      if (elapsed >= 15.0) {
+        aura = ChromeAura.wrath;
+      } else if (elapsed >= 5.0) {
+        aura = ChromeAura.celestial;
+      } else {
+        aura = ChromeAura.trident;
+      }
+      activityStr = ' $aura$glyph${ChromeAura.reset} ${ChromeAura.oracle}${heartbeat.activeLabel}${ChromeAura.reset}';
+    }
+
+    final divider = ' ${ChromeAura.mist}${ChromeAura.vLine}${ChromeAura.reset} ';
+    final leftPart = ' $section1$divider$section2';
+    final rightPart = '$satMeter$divider$section3';
+
+    final leftLen = _visibleLength(leftPart);
+    final rightLen = _visibleLength(rightPart);
+    final activityLen = _visibleLength(activityStr);
+
+    final innerW = w - 5;
+    final totalPadding = innerW - leftLen - rightLen - activityLen;
+    final String content;
+    if (totalPadding > 0) {
+      final padLeft = totalPadding ~/ 2;
+      final padRight = totalPadding - padLeft;
+      content = '$leftPart${' ' * padLeft}$activityStr${' ' * padRight}$rightPart';
+    } else {
+      final rawContent = '$leftPart$divider$activityStr$divider$section3';
+      final rawLen = _visibleLength(rawContent);
+      final pad = (innerW - rawLen).clamp(0, 300);
+      content = '$rawContent${' ' * pad}';
+    }
+
+    stdout.write('  $themeColor${ChromeAura.vLine}${ChromeAura.reset}$content $themeColor${ChromeAura.vLine}${ChromeAura.reset}\x1b[K\n');
+
+    // 5. Render suggestion dropdown overlay if active
+    int dropdownHeight = 0;
+    if (adapter != null && adapter!.showSuggestions && adapter!.suggestions.isNotEmpty) {
+      final suggestions = adapter!.suggestions;
+      final selectedIdx = adapter!.selectedSuggestionIndex;
+
+      final maxVisible = 8;
+      final count = suggestions.length;
+      int start = 0;
+      if (count > maxVisible) {
+        start = (selectedIdx - maxVisible ~/ 2).clamp(0, count - maxVisible);
+      }
+      final visibleCount = count > maxVisible ? maxVisible : count;
+      dropdownHeight = visibleCount + 2;
+
+      stdout.write('  $themeColor${ChromeAura.hLine * (w - 5)}${ChromeAura.reset}\x1b[K\n');
+
+      for (int i = 0; i < visibleCount; i++) {
+        final actualIdx = start + i;
+        final isSelected = actualIdx == selectedIdx;
+        final cmdName = suggestions[actualIdx];
+        final description = adapter!.getCommandDescription(cmdName);
+
+        final leftCol = ' /$cmdName';
+        final paddedLeft = leftCol.length > 28 ? '${leftCol.substring(0, 25)}... ' : leftCol.padRight(30);
+        final maxDescLen = w - 36;
+        final truncatedDesc = description.length > maxDescLen ? '${description.substring(0, max(5, maxDescLen - 3))}...' : description.padRight(maxDescLen.clamp(0, 500));
+        final overlayText = '$paddedLeft$truncatedDesc';
+
+        if (isSelected) {
+          stdout.write('  ${ChromeAura.bgActive}${ChromeAura.bold}${ChromeAura.oracle}$overlayText${ChromeAura.reset}\x1b[K\n');
+        } else {
+          stdout.write('  ${ChromeAura.chrome}$paddedLeft${ChromeAura.mist}$truncatedDesc${ChromeAura.reset}\x1b[K\n');
+        }
+      }
+      stdout.write('  $themeColor${ChromeAura.hLine * (w - 5)}${ChromeAura.reset}\x1b[K\n');
+    }
+
+    // 6. Draw input prompt line
+    String modePrefix = '';
+    String textContent = '';
+    String completionHint = '';
+
+    if (adapter != null) {
+      final mode = adapter!.mode;
+      final vimEnabled = adapter!.vimModeEnabled;
+      if (mode == VimMode.insert) {
+        modePrefix = ' ${ChromeAura.modeBadge(vimEnabled ? 'INSERT' : 'STANDARD', ChromeAura.bgTrident)} ';
+        textContent = adapter!.promptBuffer;
+        completionHint = adapter!.autocompleteHint;
+      } else if (mode == VimMode.command) {
+        modePrefix = ' ${ChromeAura.modeBadge('COMMAND', ChromeAura.bgPhantom)} :';
+        textContent = adapter!.commandBuffer;
+      } else if (mode == VimMode.question) {
+        modePrefix = ' ${ChromeAura.modeBadge('QUESTION', ChromeAura.bgEmber)} ';
+        textContent = adapter!.promptBuffer;
+        completionHint = adapter!.autocompleteHint;
+      } else {
+        modePrefix = ' ${ChromeAura.modeBadge('NORMAL', ChromeAura.bgChrome)} ';
+        textContent = '(Press i to type, : for commands)';
+      }
+    }
+
+    final promptPrefix = '  ${ChromeAura.trident}${ChromeAura.logoInline}${ChromeAura.reset}$modePrefix';
+    final availW = (w - _promptPrefixLen).clamp(10, 1000);
+
+    final visibleLines = <String>[];
+    for (int i = 0; i < _promptLinesCount; i++) {
+      final lineIdx = _windowStartLine + i;
+      final start = lineIdx * availW;
+      final end = (start + availW).clamp(0, textContent.length);
+      visibleLines.add(textContent.substring(start, end));
+    }
+
+    int cursorIdx = 0;
+    if (adapter != null) {
+      final mode = adapter!.mode;
+      if (mode == VimMode.command) {
+        cursorIdx = adapter!.commandBuffer.length;
+      } else if (mode != VimMode.normal) {
+        cursorIdx = adapter!.cursorIndex;
+      }
+    }
+    final cursorColIdx = cursorIdx % availW;
+    _promptScrollOffset = cursorColIdx;
+    _promptHasScrollIndicator = _windowStartLine > 0;
+
+    for (int i = 0; i < _promptLinesCount; i++) {
+      final lineText = visibleLines[i];
+      final prefix = i == 0 ? promptPrefix : ' ' * _promptPrefixLen;
+      String decorPrefix = prefix;
+
+      if (i == 0 && _windowStartLine > 0) {
+        decorPrefix = decorPrefix.replaceFirst(ChromeAura.logoInline, '${ChromeAura.celestial}▲${ChromeAura.reset}');
+      }
+      if (i == _promptLinesCount - 1 && _windowStartLine + _promptLinesCount < (textContent.length / availW).ceil()) {
+        if (i == 0) {
+          decorPrefix = decorPrefix.replaceFirst(ChromeAura.logoInline, '${ChromeAura.celestial}▼${ChromeAura.reset}');
+        } else {
+          decorPrefix = ' ' * (_promptPrefixLen - 2) + '${ChromeAura.celestial}▼${ChromeAura.reset} ';
+        }
+      }
+
+      final isLastLine = i == _promptLinesCount - 1;
+      if (adapter != null && adapter!.mode != VimMode.normal) {
+        if (isLastLine) {
+          stdout.write('$decorPrefix$lineText');
+          if (completionHint.isNotEmpty && lineText.length + _promptPrefixLen < w - 5) {
+            final col = _promptPrefixLen + lineText.length;
+            final hintSpace = w - col - 1;
+            if (hintSpace > 3) {
+              final truncHint = completionHint.length > hintSpace ? completionHint.substring(0, hintSpace) : completionHint;
+              stdout.write('\x1b[${col + 1}G${ChromeAura.mist}$truncHint${ChromeAura.reset}');
+            }
+          }
+        } else {
+          stdout.write('$decorPrefix$lineText\x1b[K\n');
+        }
+      } else {
+        if (isLastLine) {
+          stdout.write('$decorPrefix$lineText');
+        } else {
+          stdout.write('$decorPrefix$lineText\x1b[K\n');
+        }
+      }
+    }
+
+    _lastTotalEphemeralLines = _lastPrintedBlockLines + 2 + dropdownHeight + _promptLinesCount - 1;
+    if (_lastTotalEphemeralLines < 0) _lastTotalEphemeralLines = 0;
+
+    _parkCursorScrollable();
+
+    final elapsedUs = DateTime.now().difference(startTime).inMicroseconds;
+    telemetry.updateMetrics(frameDurationUs: elapsedUs);
+  }
+
+  void _parkCursorScrollable() {
+    if (adapter == null) return;
+    final mode = adapter!.mode;
+    if (mode == VimMode.normal) {
+      stdout.write('\r\x1b[?25l');
+      return;
+    }
+    final linesUp = _promptLinesCount - 1 - _lastVisibleCursorLine;
+    final col = _promptPrefixLen + (_promptHasScrollIndicator ? 1 : 0) + _promptScrollOffset + 1;
+
+    stdout.write('\x1b[?25h');
+    if (linesUp > 0) {
+      stdout.write('\x1b[${linesUp}A\x1b[${col}G');
+      _lastTotalEphemeralLines -= linesUp;
+    } else {
+      stdout.write('\x1b[${col}G');
+    }
   }
 }

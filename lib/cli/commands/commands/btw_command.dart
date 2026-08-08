@@ -37,16 +37,18 @@ class BtwCommand extends InteractiveCommand {
     stdout.write(ChromeAura.clearScreen);
     stdout.write('\x1b[1;1H');
 
-    final w = 70;
+    final forge = context['forge'];
+    final w = forge != null ? (forge.logWidth ?? 70) : 70;
+
     stdout.writeln('${ChromeAura.phantom}┌${ChromeAura.hLine * (w - 2)}┐${ChromeAura.reset}');
-    stdout.writeln('${ChromeAura.phantom}│${ChromeAura.bold} 💬 SIDE-CHANNEL INQUIRY — AGENT KHARWAL ${' ' * (w - 42)}${ChromeAura.reset}${ChromeAura.phantom}│${ChromeAura.reset}');
+    stdout.writeln('${ChromeAura.phantom}│${ChromeAura.bold} 💬 SIDE-CHANNEL INQUIRY — AGENT KHARWAL ${' ' * (w - 42).clamp(0, 500)}${ChromeAura.reset}${ChromeAura.phantom}│${ChromeAura.reset}');
     stdout.writeln('${ChromeAura.phantom}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
 
     final qLine = ' Q: $question';
     final qLineDisplay = qLine.length > w - 4 ? '${qLine.substring(0, w - 7)}...' : qLine;
-    stdout.writeln('${ChromeAura.phantom}│${ChromeAura.oracle}$qLineDisplay${' ' * (w - qLineDisplay.length - 2)}${ChromeAura.phantom}│${ChromeAura.reset}');
+    stdout.writeln('${ChromeAura.phantom}│${ChromeAura.oracle}$qLineDisplay${' ' * (w - qLineDisplay.length - 2).clamp(0, 500)}${ChromeAura.phantom}│${ChromeAura.reset}');
     stdout.writeln('${ChromeAura.phantom}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
-    stdout.write('${ChromeAura.phantom}│${ChromeAura.trident} ⠋ Thinking...${' ' * (w - 15)}${ChromeAura.phantom}│${ChromeAura.reset}\r');
+    stdout.write('${ChromeAura.phantom}│${ChromeAura.trident} ⠋ Thinking...${' ' * (w - 15).clamp(0, 500)}${ChromeAura.phantom}│${ChromeAura.reset}\r');
 
     try {
       final stream = await callModel([Message(role: MessageRole.user, content: question)]);
@@ -61,7 +63,7 @@ class BtwCommand extends InteractiveCommand {
       stdout.write(ChromeAura.clearScreen);
       stdout.write('\x1b[1;1H');
       stdout.writeln('${ChromeAura.phantom}┌${ChromeAura.hLine * (w - 2)}┐${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.phantom}│${ChromeAura.bold} 💬 ANSWER (SIDE-CHANNEL) ${' ' * (w - 28)}${ChromeAura.reset}${ChromeAura.phantom}│${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.phantom}│${ChromeAura.bold} 💬 ANSWER (SIDE-CHANNEL) ${' ' * (w - 28).clamp(0, 500)}${ChromeAura.reset}${ChromeAura.phantom}│${ChromeAura.reset}');
       stdout.writeln('${ChromeAura.phantom}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
 
       final lines = buffer.toString().split('\n');
@@ -77,7 +79,7 @@ class BtwCommand extends InteractiveCommand {
       }
 
       stdout.writeln('${ChromeAura.phantom}├${ChromeAura.hLine * (w - 2)}┤${ChromeAura.reset}');
-      stdout.writeln('${ChromeAura.phantom}│${ChromeAura.mist} Press any key to return to main conversation...${' ' * (w - 49)}${ChromeAura.phantom}│${ChromeAura.reset}');
+      stdout.writeln('${ChromeAura.phantom}│${ChromeAura.mist} Press any key to return to main conversation...${' ' * (w - 49).clamp(0, 500)}${ChromeAura.phantom}│${ChromeAura.reset}');
       stdout.write('${ChromeAura.phantom}└${ChromeAura.hLine * (w - 2)}┘${ChromeAura.reset}');
 
       stdin.echoMode = false;
@@ -86,9 +88,7 @@ class BtwCommand extends InteractiveCommand {
       if (adapter != null) {
         final doneCompleter = Completer<void>();
         adapter.rawKeyInterceptor = (bytes) {
-          if (!doneCompleter.isCompleted) {
-            if (!doneCompleter.isCompleted) doneCompleter.complete();
-          }
+          if (!doneCompleter.isCompleted) doneCompleter.complete();
         };
         await doneCompleter.future;
         adapter.rawKeyInterceptor = null;
@@ -100,7 +100,7 @@ class BtwCommand extends InteractiveCommand {
       stdout.writeln('\n${ChromeAura.wrath}Error processing query: $e${ChromeAura.reset}');
       await Future.delayed(const Duration(seconds: 2));
     } finally {
-      stdout.write(ChromeAura.showCursor);
+      stdout.write('${ChromeAura.alternateScreenBufferOff}${ChromeAura.showCursor}');
     }
 
     onDone(null, shouldQuery: false);

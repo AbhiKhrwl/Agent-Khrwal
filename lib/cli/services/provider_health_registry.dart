@@ -312,13 +312,35 @@ class ProviderHealthRegistry {
       );
     }
 
-    // 0.2 Detect Context Window Overflows (Trigger Compaction)
+    // 0.2 Detect TPM/RPM Rate Limits that use HTTP 413 (e.g. Groq "Request too large" with "rate_limit_exceeded")
+    // MUST come before contextOverflow check — Groq sends 413 for TPM limits, NOT context overflow!
+    if (lowerStr.contains("rate_limit_exceeded") || 
+        lowerStr.contains("tokens per minute") ||
+        lowerStr.contains("requests per minute") ||
+        (lowerStr.contains("request too large") && lowerStr.contains("rate_limit"))) {
+      Duration? parsedCooldown;
+      // Parse Groq's "try again in Xs" from the body
+      final match = RegExp(r'try again in ([\d\.]+)s').firstMatch(errorStr);
+      if (match != null) {
+        final secs = double.tryParse(match.group(1)!) ?? 15.0;
+        parsedCooldown = Duration(milliseconds: (secs * 1000).toInt());
+      }
+      return FailureClassification(
+        type: FailureType.rateLimit,
+        reason: 'TPM/RPM Rate Limit Hit',
+        cooldown: parsedCooldown,
+      );
+    }
+
+    // 0.3 Detect Context Window Overflows (Trigger Compaction)
+    // NOTE: Removed blind '413' match — Groq uses 413 for TPM limits, not context overflow.
+    // Only match genuine context/token LIMIT errors, not rate limits.
     if (lowerStr.contains("context length") || 
         lowerStr.contains("token limit") || 
         lowerStr.contains("too many tokens") || 
         lowerStr.contains("exceeds the max_model_len") ||
         lowerStr.contains("maximum context length") ||
-        lowerStr.contains("413")) {
+        (lowerStr.contains("413") && !lowerStr.contains("rate_limit") && (lowerStr.contains("context") || lowerStr.contains("max_model_len")))) {
       return FailureClassification(
         type: FailureType.contextOverflow,
         reason: 'Context Length Exceeded',

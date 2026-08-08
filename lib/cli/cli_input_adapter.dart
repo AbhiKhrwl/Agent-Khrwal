@@ -26,8 +26,8 @@ import 'package:apex_lite/core/infrastructure/services/session_manager.dart';
 ///   • Physical IME caret parking via ITerminalInputAdapter properties
 ///   • Paste-lock burst detection (>3 chars in <5ms → buffer + single flush)
 ///   • Slate-gray autocomplete hint provider with Tab/Right-arrow acceptance
-///   • Interactive Omega Fortress consensus cards via Completer<bool>
-///   • Interactive question selector cards via Completer<String>
+///   • Interactive Omega Fortress consensus cards via Completer&lt;bool&gt;
+///   • Interactive question selector cards via Completer&lt;String&gt;
 ///   • COMMAND mode for :exit, :clear, :configure, :search
 ///   • Scroll control delegation to VirtualConsoleList via TerminalForge
 class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
@@ -64,6 +64,8 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
   // ═══════════════════════════════════════════════════════════════
   final List<String> _history = [];
   int _historyIndex = -1;
+  DateTime? _lastCtrlC;
+  DateTime? _lastCtrlCProcessedTime;
 
   void Function(List<int>)? rawKeyInterceptor;
 
@@ -76,7 +78,9 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
     _dialogs = CLIInteractiveDialogs(_forge);
   }
 
+  @override
   bool get vimModeEnabled => _vimModeEnabled;
+
   set vimModeEnabled(bool val) {
     _vimModeEnabled = val;
     if (!_vimModeEnabled) {
@@ -107,6 +111,12 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
   int get selectedSuggestionIndex => _selectedSuggestionIndex;
 
   @override
+  String getCommandDescription(String cmdName) {
+    final cleanName = cmdName.startsWith('/') ? cmdName.substring(1) : cmdName;
+    return _registry.getDescription(cleanName) ?? 'Command execution helper';
+  }
+
+  @override
   Stream<InputEvent> get inputChannel => _controller.stream;
 
   /// Start raw-mode listening on stdin.
@@ -120,13 +130,8 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
       return;
     }
 
-    // Enable SGR mouse tracking for wheel scroll support
-    // 1002 = button-event tracking (press/release/drag, NOT idle motion)
-    // 1006 = SGR extended coordinates
-    // NOTE: Avoid 1003 (all motion tracking) — it floods stdin with escape
-    // sequences for every pixel of mouse movement, which triggers the paste
-    // detection system and corrupts the prompt buffer.
-    stdout.write('\x1b[?1002h\x1b[?1006h');
+    // Disabled mouse tracking so that the user can select and copy terminal text naturally using their mouse cursor.
+    // stdout.write('\x1b[?1002h\x1b[?1006h');
 
     _stdinSub = stdin.listen(
       _onRawBytes,
@@ -137,7 +142,7 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
 
   /// Disable mouse tracking — call before dispose.
   void stopMouseTracking() {
-    stdout.write('\x1b[?1002l\x1b[?1006l');
+    // Disabled mouse tracking
   }
 
   /// Fallback: line-mode listening for non-interactive terminals.
@@ -397,9 +402,11 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
         _forge.logs.scrollUp(999999, _forge.viewport.rows - 10);
         _forge.triggerRedraw();
         break;
-      case '/': // Enter search (enter command mode with search prefix)
-        _mode = VimMode.command;
-        _commandBuffer = 'search ';
+      case '/': // Enter INSERT mode with '/' to trigger slash command suggestions
+        _mode = VimMode.insert;
+        _promptBuffer = '/';
+        _cursorIndex = 1;
+        _updateSuggestions();
         _forge.triggerRedraw();
         break;
     }
@@ -555,13 +562,29 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
           _forge.triggerRedraw();
           break;
         }
-        // Navigate command history backwards
-        if (_history.isNotEmpty && _historyIndex > 0) {
-          _historyIndex--;
-          _promptBuffer = _history[_historyIndex];
-          _cursorIndex = _promptBuffer.length;
+        
+        // 🔱 Navigating up inside a wrapped multiline prompt block
+        final availableWidth = _forge.promptAvailableWidth;
+        final currentCursorLine = (_cursorIndex / availableWidth).floor();
+        if (currentCursorLine > 0) {
+          _cursorIndex = (_cursorIndex - availableWidth).clamp(0, _promptBuffer.length);
           _updateAutocompleteHint();
           _forge.triggerRedraw();
+          break;
+        }
+
+        // Navigate command history backwards
+        if (_history.isNotEmpty) {
+          if (_historyIndex == -1 || _historyIndex == _history.length) {
+            _historyIndex = _history.length;
+          }
+          if (_historyIndex > 0) {
+            _historyIndex--;
+            _promptBuffer = _history[_historyIndex];
+            _cursorIndex = _promptBuffer.length;
+            _updateAutocompleteHint();
+            _forge.triggerRedraw();
+          }
         }
         break;
       case VimMode.question:
@@ -586,19 +609,36 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
           _forge.triggerRedraw();
           break;
         }
-        // Navigate command history forwards
-        if (_history.isNotEmpty && _historyIndex < _history.length - 1) {
-          _historyIndex++;
-          _promptBuffer = _history[_historyIndex];
-          _cursorIndex = _promptBuffer.length;
+        
+        // 🔱 Navigating down inside a wrapped multiline prompt block
+        final availableWidth = _forge.promptAvailableWidth;
+        final currentCursorLine = (_cursorIndex / availableWidth).floor();
+        final totalLines = (_promptBuffer.length / availableWidth).ceil();
+        if (currentCursorLine < totalLines - 1) {
+          _cursorIndex = (_cursorIndex + availableWidth).clamp(0, _promptBuffer.length);
           _updateAutocompleteHint();
           _forge.triggerRedraw();
-        } else if (_historyIndex >= _history.length - 1) {
-          _historyIndex = _history.length;
-          _promptBuffer = '';
-          _cursorIndex = 0;
-          _autocompleteHint = '';
-          _forge.triggerRedraw();
+          break;
+        }
+
+        // Navigate command history forwards
+        if (_history.isNotEmpty) {
+          if (_historyIndex == -1 || _historyIndex == _history.length) {
+            _historyIndex = _history.length;
+          }
+          if (_historyIndex < _history.length - 1) {
+            _historyIndex++;
+            _promptBuffer = _history[_historyIndex];
+            _cursorIndex = _promptBuffer.length;
+            _updateAutocompleteHint();
+            _forge.triggerRedraw();
+          } else if (_historyIndex == _history.length - 1) {
+            _historyIndex = _history.length;
+            _promptBuffer = '';
+            _cursorIndex = 0;
+            _autocompleteHint = '';
+            _forge.triggerRedraw();
+          }
         }
         break;
       case VimMode.question:
@@ -692,6 +732,12 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
   }
 
   void _handleCtrlC() {
+    final now = DateTime.now();
+    if (_lastCtrlCProcessedTime != null && now.difference(_lastCtrlCProcessedTime!) < const Duration(milliseconds: 200)) {
+      return;
+    }
+    _lastCtrlCProcessedTime = now;
+
     if (_dialogs.isQuestionActive) {
       _dialogs.handleCtrlC(
         setMode: (m) => _mode = m,
@@ -699,11 +745,33 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
       );
       return;
     }
-    // Default: exit gracefully
+
+    // 🔱 Safe exit guard logic:
+    // If prompt or command fields contain text, clear them first instead of quitting.
+    if (_promptBuffer.isNotEmpty || _commandBuffer.isNotEmpty) {
+      _promptBuffer = '';
+      _commandBuffer = '';
+      _cursorIndex = 0;
+      _autocompleteHint = '';
+      _forge.triggerRedraw();
+      return;
+    }
+
+    // If input fields are empty, require a double Ctrl+C press within 2 seconds.
+    if (_lastCtrlC == null || now.difference(_lastCtrlC!) > const Duration(seconds: 2)) {
+      _lastCtrlC = now;
+      _forge.appendLogSafe('${ChromeAura.ember}⚠️ Press Ctrl+C once more to quit the agent.${ChromeAura.reset}');
+      return;
+    }
+
+    // Double Ctrl+C received within 2 seconds: exit gracefully
     _forge.dispose();
     exit(0);
   }
-
+  @override
+  void handleInterrupt() {
+    _handleCtrlC();
+  }
   void _handleCtrlD() {
     _forge.dispose();
     exit(0);
@@ -880,54 +948,63 @@ class CLIInputAdapter implements IInputAdapter, ITerminalInputAdapter {
       'sessionManager': sessionManager,
     };
 
-    if (cmd is LocalCommand) {
-      _forge.onStatus('Running command /${cmd.name}...');
-      final result = await cmd.execute(parsed.arguments, context);
-      if (result is TextResult) {
-        _forge.logs.appendLog(result.value, _forge.logWidth);
-        _forge.triggerRedraw();
-      } else if (result is CompactionResult) {
-        _forge.logs.appendLog('${ChromeAura.logoInline} Compacted: ${result.displayText}', _forge.logWidth);
-        _forge.triggerRedraw();
-      }
-    } else if (cmd is InteractiveCommand) {
-      await cmd.execute((result, {bool shouldQuery = false}) {
-        if (result != null) {
-          _forge.logs.appendLog(result, _forge.logWidth);
+    try {
+      if (cmd is LocalCommand) {
+        _forge.onStatus('Running command /${cmd.name}...');
+        final result = await cmd.execute(parsed.arguments, context);
+        if (result is TextResult) {
+          _forge.logs.appendLog(result.value, _forge.logWidth);
+          _forge.triggerRedraw();
+        } else if (result is CompactionResult) {
+          _forge.logs.appendLog('${ChromeAura.logoInline} Compacted: ${result.displayText}', _forge.logWidth);
+          _forge.triggerRedraw();
         }
-        if (shouldQuery && result != null) {
-          _controller.add(InputEvent(type: InputType.text, data: result));
-        }
+      } else if (cmd is InteractiveCommand) {
+        await cmd.execute((result, {bool shouldQuery = false}) {
+          if (result != null) {
+            _forge.logs.appendLog(result, _forge.logWidth);
+          }
+          if (shouldQuery && result != null) {
+            _controller.add(InputEvent(type: InputType.text, data: result));
+          }
+          _forge.screen.reset();
+          _forge.triggerRedraw();
+        }, parsed.arguments, context);
+
+        // Restore terminal raw mode for CLIInputAdapter
+        try {
+          stdin.lineMode = false;
+          stdin.echoMode = false;
+        } catch (_) {}
         _forge.screen.reset();
         _forge.triggerRedraw();
-      }, parsed.arguments, context);
+      } else if (cmd is PromptCommand) {
+        _forge.onStatus(cmd.progressMessage);
 
-      // Restore terminal raw mode for CLIInputAdapter
+        // 🔱 Restrict active allowed tools for prompt command if specified
+        final core = _forge.core;
+        if (core != null) {
+          core.router.activeAllowedTools = cmd.allowedTools.isNotEmpty ? cmd.allowedTools : null;
+        }
+
+        final messages = await cmd.getPromptMessages(parsed.arguments, context);
+
+        for (final msg in messages) {
+          _forge.history!.add(msg);
+          _controller.add(InputEvent(
+            type: InputType.text,
+            data: msg.content,
+            metadata: msg.metadata,
+          ));
+        }
+        _forge.triggerRedraw();
+      }
+    } catch (e) {
+      _forge.onFinalResponse('  ${ChromeAura.wrath}✗ Command Error: $e${ChromeAura.reset}');
       try {
         stdin.lineMode = false;
         stdin.echoMode = false;
       } catch (_) {}
-      _forge.screen.reset();
-      _forge.triggerRedraw();
-    } else if (cmd is PromptCommand) {
-      _forge.onStatus(cmd.progressMessage);
-
-      // 🔱 Restrict active allowed tools for prompt command if specified
-      final core = _forge.core;
-      if (core != null) {
-        core.router.activeAllowedTools = cmd.allowedTools.isNotEmpty ? cmd.allowedTools : null;
-      }
-
-      final messages = await cmd.getPromptMessages(parsed.arguments, context);
-
-      for (final msg in messages) {
-        _forge.history!.add(msg);
-        _controller.add(InputEvent(
-          type: InputType.text,
-          data: msg.content,
-          metadata: msg.metadata,
-        ));
-      }
       _forge.triggerRedraw();
     }
   }

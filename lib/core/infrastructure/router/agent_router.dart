@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'dart:io';
 import '../../domain/entities/tool_entities.dart';
 import '../../domain/entities/tool_execution_record.dart';
 import '../../domain/interfaces/i_tool.dart';
@@ -6,10 +8,15 @@ import '../tools/mcp_tools.dart';
 import '../tools/plan_mode_tools.dart';
 import '../../../cli/services/plugin_manager.dart';
 import '../services/speculative_sandbox.dart';
+import '../tools/apex_tool_scaling_engine.dart';
 
 
 
 class AgentRouter {
+  /// Configurable token threshold for client-side Progressive Tool Disclosure.
+  /// If schema token size exceeds this limit, external MCP tools are deferred/hidden.
+  static int progressiveDisclosureThreshold = 10000;
+
   final SentryPurity validator;
   final Map<String, ITool> _tools = {};
 
@@ -43,6 +50,64 @@ class AgentRouter {
 
   List<ITool> get registeredTools => _tools.values.toList();
 
+  /// Calculates dynamic active tools list using client-side Progressive Tool Disclosure.
+  /// If total schema token overhead of all potential tools exceeds a threshold (3,000 tokens),
+  /// hides external MCP tools and exposes the three bridge tools (tool_search, tool_describe, tool_call) instead.
+  List<ITool> getActiveTools() {
+    // We also include all deferred MCP tools from McpRegistry to estimate the full potential schema size
+    final potentialTools = <ITool>[..._tools.values];
+    for (final mcpDef in McpRegistry.mcpTools.values) {
+      // Avoid adding if already in _tools
+      if (!_tools.containsKey(mcpDef.name)) {
+        potentialTools.add(McpToolAdapter(mcpDef));
+      }
+    }
+
+    // Estimate schema token size (approx 4 chars per token)
+    final totalChars = potentialTools.fold<int>(0, (sum, t) {
+      final schemaStr = jsonEncode(t.parameterSchema);
+      return sum + schemaStr.length + t.name.length + t.description.length;
+    });
+    final estimatedTokens = totalChars ~/ 4;
+
+    final threshold = progressiveDisclosureThreshold;
+
+    if (estimatedTokens > threshold) {
+      // Progressive Tool Disclosure is ACTIVE!
+      stdout.writeln('🔱 [Scaling Engine] Progressive Tool Disclosure ACTIVE (Estimated: $estimatedTokens tokens > $threshold threshold). Hiding external & secondary tools.');
+      
+      const secondaryTools = {
+        'team_create', 'team_delete', 'team_join',
+        'lsp',
+        'schedule_cron', 'cron_create', 'cron_delete', 'cron_list',
+        'enter_worktree', 'exit_worktree',
+        'notebook_edit', 'config', 'todo_write', 'sleep', 'skill',
+      };
+
+      final filtered = <ITool>[];
+      for (final tool in potentialTools) {
+        // Hide external MCP tools and secondary developer tools
+        if (tool.name.startsWith('mcp__') || secondaryTools.contains(tool.name)) {
+          continue;
+        }
+        // Expose core tools + bridge tools (tool_search, tool_describe, tool_call)
+        filtered.add(tool);
+      }
+      return filtered;
+    } else {
+      // Progressive Tool Disclosure is INACTIVE!
+      // Expose all tools, but hide the bridge tools (tool_describe, tool_call) to avoid confusing the LLM
+      final filtered = <ITool>[];
+      for (final tool in potentialTools) {
+        if (tool.name == 'tool_describe' || tool.name == 'tool_call') {
+          continue;
+        }
+        filtered.add(tool);
+      }
+      return filtered;
+    }
+  }
+
   /// 🔱 CLEAN SLATE: No prompt engineering.
   ///
   /// Prior attempts injected behavioral instructions here, but Gemma 4 E2B (2B)'s
@@ -62,11 +127,8 @@ class AgentRouter {
   ///   { 'name': 'bash', 'description': '...', 'parameters': {...} }
   /// NOT the nested format from getToolDefinitionsForApi().
   List<Map<String, dynamic>> getToolDefinitionsFlat() {
-    final allTools = <ITool>[..._tools.values];
-    for (final mcpDef in McpRegistry.mcpTools.values) {
-      allTools.add(McpToolAdapter(mcpDef));
-    }
-    return allTools.map((tool) {
+    final activeTools = getActiveTools();
+    return activeTools.map((tool) {
       final properties = <String, dynamic>{};
       final required = <String>[];
 
@@ -102,11 +164,8 @@ class AgentRouter {
   /// Generates tool definitions as a JSON list for API providers that support
   /// native function calling.
   List<Map<String, dynamic>> getToolDefinitionsForApi() {
-    final allTools = <ITool>[..._tools.values];
-    for (final mcpDef in McpRegistry.mcpTools.values) {
-      allTools.add(McpToolAdapter(mcpDef));
-    }
-    return allTools.map((tool) {
+    final activeTools = getActiveTools();
+    return activeTools.map((tool) {
       final properties = <String, dynamic>{};
       final required = <String>[];
 
@@ -195,6 +254,14 @@ class AgentRouter {
     }
 
     return results;
+  }
+
+  /// Checks if a tool by name is registered and concurrency safe.
+  bool isConcurrencySafe(String toolName) {
+    if (toolName.startsWith('mcp__')) {
+      return true;
+    }
+    return _tools[toolName]?.isConcurrencySafe ?? false;
   }
 
   /// 🔱 Core Extraction: Public single-tool executor for Streaming Tool Executor.
@@ -334,8 +401,9 @@ class AgentRouter {
           );
         } else {
           final actualParams = preResult?.modifiedInput ?? actualRequest.params;
+          final coercedParams = ApexArgumentCoercer.coerce(actualParams, tool.parameterSchema);
           try {
-            result = await tool.run(actualParams).timeout(
+            result = await tool.run(coercedParams).timeout(
               const Duration(seconds: 30),
               onTimeout: () => ToolResult(
                 toolUseId: actualRequest.id,

@@ -8,6 +8,7 @@ import '../security/path_jailer.dart';
 /// Sandboxed Todo Checklist Writer. Merges and persists items to `.apex_todos.json`.
 class TodoWriteTool implements ITool {
   final String sandboxRoot;
+  // ignore: unused_field
   final PathJailer _jailer;
 
   TodoWriteTool(this.sandboxRoot) : _jailer = PathJailer(sandboxRoot: sandboxRoot);

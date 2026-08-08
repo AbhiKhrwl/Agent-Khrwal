@@ -56,10 +56,13 @@ class PlanModeState {
 }
 
 class PlanModeCoordinator {
-  final String plansDirectory;
-  final String mailboxDirectory;
-  final String transcriptFilePath;
+  static String? customSandboxDir;
+
+  String plansDirectory;
+  String mailboxDirectory;
+  String transcriptFilePath;
   final PlanModeState state = PlanModeState();
+  bool _dirsInitialized = false;
 
   static final PlanModeCoordinator instance = PlanModeCoordinator._internal();
 
@@ -68,34 +71,112 @@ class PlanModeCoordinator {
   }
 
   PlanModeCoordinator._internal()
-      : plansDirectory = './apex_sandbox/plans',
-        mailboxDirectory = './apex_sandbox/mailboxes',
-        transcriptFilePath = './apex_sandbox/transcript.jsonl' {
-    _initDirs();
-  }
+      : plansDirectory = '',
+        mailboxDirectory = '',
+        transcriptFilePath = '';
 
   PlanModeCoordinator.custom({
     required this.plansDirectory,
     required this.mailboxDirectory,
     required this.transcriptFilePath,
   }) {
-    _initDirs();
+    _initDirsSync();
   }
 
-  void _initDirs() {
-    Directory(plansDirectory).createSync(recursive: true);
-    Directory(mailboxDirectory).createSync(recursive: true);
-    final transcriptFile = File(transcriptFilePath);
-    if (!transcriptFile.existsSync()) {
-      try {
+  /// 🔱 Platform-safe lazy init: resolves writable base path on first use.
+  /// On Android/iOS, `./` is READ-ONLY — we must use getApplicationDocumentsDirectory.
+  /// On desktop/CLI, the relative path works fine.
+  Future<void> ensureInitialized() async {
+    if (_dirsInitialized) return;
+
+    final basePath = customSandboxDir ?? './apex_sandbox';
+
+    plansDirectory = '$basePath/plans';
+    mailboxDirectory = '$basePath/mailboxes';
+    transcriptFilePath = '$basePath/transcript.jsonl';
+
+    _initDirsSync();
+    _dirsInitialized = true;
+  }
+
+  void _initDirsSync() {
+    try {
+      Directory(plansDirectory).createSync(recursive: true);
+      Directory(mailboxDirectory).createSync(recursive: true);
+      final transcriptFile = File(transcriptFilePath);
+      if (!transcriptFile.existsSync()) {
         transcriptFile.createSync(recursive: true);
-      } catch (_) {}
+      }
+    } catch (e) {
+      // 🔱 Safety: Don't crash the entire app if sandbox dirs fail.
+      // Plan mode features will degrade gracefully.
+      print('[PlanModeCoordinator] Warning: Could not init dirs: $e');
     }
   }
 
   // ==========================================
   // 1. Dynamic Model Selector (Auto-Escalation)
   // ==========================================
+
+  // 🔱 2026 Active and Fallback Models per Provider
+  static const List<String> nvidiaModels = [
+    'nvidia/llama-3.1-nemotron-70b-instruct',
+    'nvidia/llama-3.1-nemotron-51b-instruct',
+    'deepseek-ai/deepseek-v4-pro',
+    'deepseek-ai/deepseek-v4-flash',
+    'qwen/qwen3-coder-480b-a35b-instruct',
+    'qwen/qwen3.5-397b-a17b',
+    'qwen/qwen3.5-122b-a10b',
+    'qwen/qwen3-next-80b-a3b-instruct',
+    'google/gemma-4-31b-it',
+  ];
+
+  static const List<String> openRouterModels = [
+    'google/gemma-4-26b-a4b-it:free',
+    'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+    'nvidia/nemotron-3-super-120b-a12b:free',
+    'nvidia/nemotron-3-nano-30b-a3b:free',
+    'google/gemma-4-31b-it:free',
+    'deepseek/deepseek-v4-flash:free',
+    'qwen/qwen3-coder:free',
+    'qwen/qwen3-next-80b-a3b-instruct:free',
+  ];
+
+  static const List<String> geminiModels = [
+    'gemini-3.1-flash-lite',
+    'gemini-3-flash-preview',
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
+    'gemini-2.0-flash',
+    'gemini-2.0-flash-001',
+    'gemini-2.0-flash-lite',
+    'gemini-2.0-flash-lite-001',
+  ];
+
+  static const List<String> groqModels = [
+    'llama-3.3-70b-versatile',
+    'openai/gpt-oss-120b',
+    'qwen/qwen3-32b',
+  ];
+
+  static List<String> getProviderModels(String type) {
+    switch (type.toLowerCase()) {
+      case 'nvidia':
+        return nvidiaModels;
+      case 'openrouter':
+        return openRouterModels;
+      case 'gemini':
+        return geminiModels;
+      case 'groq':
+        return groqModels;
+      case 'ollama':
+        return ['gemma4:e2b', 'gemma:2b', 'llama3', 'mistral'];
+      case 'custom':
+        return ['custom-model-1', 'custom-model-2'];
+      default:
+        return [];
+    }
+  }
 
   /// Resolves the ordered list of runtime models based on permission mode, token sizes, and provider type.
   List<String> getRuntimeModelList({
@@ -104,55 +185,6 @@ class PlanModeCoordinator {
     String? providerType,
   }) {
     final pType = providerType?.toLowerCase() ?? 'gemini';
-
-    // 🔱 2026 Active and Fallback Models per Provider
-    // Supports various user spelling typos/casing (e.g. invidia/nvidia, 11ama/llama)
-    final List<String> nvidiaModels = [
-      'nvidia/llama-3.1-nemotron-70b-instruct',
-      'invidia/llama-3.1-nemotron-70b-instruct',
-      'nvidia/llama-3.1-nemotron-51b-instruct',
-      'invidia/llama-3.1-nemotron-51b-instruct',
-      'deepseek-ai/deepseek-v4-pro',
-      'deepseek-ai/deepseek-v4-flash',
-      'qwen/qwen3-coder-480b-a35b-instruct',
-      'qwen/qwen3.5-397b-a17b',
-      'qwen/qwen3.5-122b-a10b',
-      'qwen/qwen3-next-80b-a3b-instruct',
-      'google/gemma-4-31b-it',
-    ];
-
-    final List<String> openRouterModels = [
-      'google/gemma-4-26b-a4b-it:free',
-      'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
-      'nvidia/nemotron-3-super-120b-a12b:free',
-      'invidia/nemotron-3-super-120b-a12b:free',
-      'nvidia/nemotron-3-nano-30b-a3b:free',
-      'google/gemma-4-31b-it:free',
-      'deepseek/deepseek-v4-flash:free',
-      'qwen/qwen3-coder:free',
-      'qwen/qwen3-next-80b-a3b-instruct:free',
-    ];
-
-    final List<String> geminiModels = [
-      'gemini-3.1-flash-lite',
-      'gemini-3-flash-preview',
-      'gemini-2.5-flash',
-      'gemini-2.5-flash-lite',
-      'gemini-2.5-flash-image',
-      'gemini-2.5-flash-preview-tts',
-      'gemini-2.0-flash',
-      'gemini-2.0-flash-001',
-      'gemini-2.0-flash-lite',
-      'gemini-2.0-flash-lite-001',
-    ];
-
-    final List<String> groqModels = [
-      'llama-3.3-70b-versatile',
-      'Llama-3.3-70b-versatile',
-      '11ama-3.3-70b-versatile',
-      'openai/gpt-oss-120b',
-      'qwen/qwen3-32b',
-    ];
 
     final List<String> rawCandidates = [];
 

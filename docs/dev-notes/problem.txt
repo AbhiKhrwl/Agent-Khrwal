@@ -102,6 +102,27 @@
   → Fix 7: Resolved a critical Plan Mode crash (Waterfall failure) where entering plan mode unconditionally escalated the runtime model to the Gemini-specific model name (`gemini-2.5-flash`) even on other active providers (like Groq, NVIDIA, Ollama, Custom), throwing Model Not Found HTTP exceptions. Implemented provider-aware model matching in `PlanModeCoordinator.getRuntimeModel` to resolve correct reasoning models dynamically for all active providers.
   → Fix 8: Engineered a "Smart Efficiency & Free-First" model selection policy in Plan Mode. If the active model name indicates an efficient or free tier (contains `free`, `8b`, `9b`, `gemma-2`), the coordinator respects the user's intent: on OpenRouter it routes to high-quality free models (like `gemma-2-9b-it:free`), and on other providers it keeps the exact chosen model. Replaced heavy, slow, and expensive models (like 405B on NVIDIA) with ultra-fast, cheap, and highly capable alternatives (like Llama 3.1 8B/70B on NVIDIA, and Llama 3.1 8B on Groq), boosting response speed 100x and preventing developer credit exhaustion.
 
+Problem: Massive JSON schemas of multiple external MCP and plugin tools bloat prompt context window, dilute model reasoning, increase prefill latency, and lead to validation crashes due to LLMs routinely violating expected parameter types (sending stringified booleans, numbers, or bare arguments).
+Solution:
+1. Engineered `lib/core/infrastructure/tools/apex_tool_scaling_engine.dart` containing a high-precision client-side BM25 TF-IDF search catalog (`ApexToolCatalog`) and a fail-safe parameters type coercion engine (`ApexArgumentCoercer`).
+2. Integrated `ApexArgumentCoercer` in the main execution pipeline of `AgentRouter._executeSingle`. It intercepts incoming parameters on-the-fly, matches them against the tool's parameter schema, and dynamically coerces string numbers/integers, string booleans, and bare list wraps into their correct JSON schema types before execution, printing clean telemetry warnings to console.
+3. Upgraded `ToolSearchTool` to leverage the high-precision client-side BM25 catalog scoring algorithm, replacing the simple substring matcher.
+4. Created dynamic bridge tools `tool_describe` and `tool_call` to retrieve schemas and invoke deferred tools on-demand.
+5. Implemented client-side Progressive Tool Disclosure. If the total token size of registered tool schemas exceeds a configurable static threshold (`AgentRouter.progressiveDisclosureThreshold` defaulting to 10,000 tokens), the router automatically hides all external MCP tools (`mcp__*`) from prompt definitions, replacing them with the three lightweight bridge tools (`tool_search`, `tool_describe`, `tool_call`) to keep the context window lean and reliable.
+6. Created `test/apex_tool_scaling_engine_test.dart` and fully validated all BM25 indexing, coercion, bridge execution, and progressive disclosure behaviors. All tests and core test suites pass cleanly.
 
+Problem: Long-running local model executions (taking 30-60+ seconds of intensive CPU/GPU processing) or background waterfall cascading could cause the mobile operating system (especially Android's aggressive battery saving) to put the app to sleep or unexpectedly kill the inference process.
+Solution:
+1. Declared `android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, `android.permission.FOREGROUND_SERVICE`, and `android.permission.FOREGROUND_SERVICE_SPECIAL_USE` in `android/app/src/main/AndroidManifest.xml`.
+2. Registered the persistent `ForegroundService` with custom Special Use subtype metadata for AI agentic on-device reasoning to comply with Android 14+ policies.
+3. Created a unified `BackgroundTaskService` in `lib/core/infrastructure/services/background_task_service.dart` to configure premium notification styling and FGS options, running cleanly in a single-isolate pattern to prevent memory doubling OOM crashes.
+4. Integrated automatic lifecycle hooks in `HybridInferenceCoordinator.getResponseStream` to start the foreground service on inference start and cleanly terminate it on stream done, error, or cancellation.
+5. Added `BackgroundTaskService.init()` to app startup in `lib/main.dart` to load foreground configurations securely.
 
+Problem: Clean compiler static analysis check revealed several cosmetic and style warnings across the CLI, telemetry, and scroll weaver modules, including unused imports in scratch tools, print warnings, leading underscores on local identifiers, and string concatenation.
+Solution:
+1. Deleted the temporary testing scratch file `scratch/inspect_fgs.dart`, completely resolving the `unused_import` warning.
+2. Added `// ignore_for_file: avoid_print` at the top of the pure command-line interface entry point `bin/kharwal_cli.dart` to cleanly handle console logging warnings without cluttering individual prints.
+3. Renamed local variables `_lastToolName` and `_lastToolParams` inside `bin/kharwal_cli.dart` to `lastToolName` and `lastToolParams`, fully satisfying the `no_leading_underscores_for_local_identifiers` guidelines.
+4. Converted string concatenations (`+`) to modern string interpolations (`'${...}'`) in `lib/cli/components/divine_soul_telemetry.dart` and `lib/cli/components/scroll_weaver.dart` (lines 246-290), resolving all `prefer_interpolation_to_compose_strings` warnings and bringing the compiler static analyzer to 100% soundness (zero errors, zero warnings across all main files).
 

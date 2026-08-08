@@ -21,13 +21,21 @@ class VirtualConsoleList {
   /// or when user sends a new message.
   bool userScrolledUp = false;
 
+  List<String> get wrappedLines => _wrappedLines;
+  int get lastLogWrappedCount => _lastLogWrappedCount;
+
   VirtualConsoleList();
 
   /// Append a log block. Splits it by newline, wraps it, and updates scroll history.
   void appendLog(String log, int terminalWidth) {
     _rawLogs.add(log);
 
-    final lines = log.split('\n');
+    var cleanLog = log;
+    if (cleanLog.endsWith('\n')) {
+      cleanLog = cleanLog.substring(0, cleanLog.length - 1);
+    }
+
+    final lines = cleanLog.split('\n');
     var wrappedCount = 0;
 
     // If terminal width changed, we need to re-wrap everything.
@@ -120,14 +128,22 @@ class VirtualConsoleList {
   void _rebuildWrappedLines(int terminalWidth) {
     _wrappedLines.clear();
     for (final block in _rawLogs) {
-      final lines = block.split('\n');
+      var cleanBlock = block;
+      if (cleanBlock.endsWith('\n')) {
+        cleanBlock = cleanBlock.substring(0, cleanBlock.length - 1);
+      }
+      final lines = cleanBlock.split('\n');
       for (final line in lines) {
         _wrappedLines.addAll(wrapANSIStyleLine(line, terminalWidth));
       }
     }
     if (_rawLogs.isNotEmpty) {
       final lastBlock = _rawLogs.last;
-      final lines = lastBlock.split('\n');
+      var cleanLast = lastBlock;
+      if (cleanLast.endsWith('\n')) {
+        cleanLast = cleanLast.substring(0, cleanLast.length - 1);
+      }
+      final lines = cleanLast.split('\n');
       var lastBlockWrappedCount = 0;
       for (final line in lines) {
         lastBlockWrappedCount += wrapANSIStyleLine(line, terminalWidth).length;
@@ -199,6 +215,7 @@ class VirtualConsoleList {
     _rawLogs.clear();
     _wrappedLines.clear();
     _scrollOffsetLines = 0;
+    _lastLogWrappedCount = 0;
     bottomLocked = true;
     userScrolledUp = false;
   }

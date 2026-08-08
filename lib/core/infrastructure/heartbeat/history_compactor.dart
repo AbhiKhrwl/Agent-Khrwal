@@ -75,30 +75,74 @@ class AetherHistoryCompactor {
   /// 🔱 Fix #7 + Supreme Fix 3: Pair-aware trim with dynamic thresholds.
   /// LetsDo mode keeps more context (for tool-heavy loops).
   /// JustTalk mode keeps less (faster inference).
-  void trimHistory(List<Message> history, ChatMode chatMode) {
-    // 🔱 Supreme Fix 3: Dynamic thresholds per mode
-    final maxMessages = chatMode == ChatMode.letsDo ? 60 : 40;
-    final keepTail = chatMode == ChatMode.letsDo ? 40 : 20;
-    if (history.length <= maxMessages) return;
+  /// 🔱 Dynamic Token-Aware History Trimming
+  /// Calculates token estimates dynamically and trims older messages to fit within a safe budget
+  /// of the active model's context window. Enforces a strict 70% limit (60% on local RAM guard).
+  /// Preserves the very first user message (Goal Safety Guard) and system prompts.
+  void trimHistory(List<Message> history, ChatMode chatMode, {int? contextLimit, bool isLocalMode = false}) {
+    final limit = contextLimit ?? 8192;
+    final maxSafeBudget = (limit * (isLocalMode ? 0.60 : 0.70)).toInt();
 
+    // 1. Calculate total estimated tokens in history (approx 3.8 chars per token)
+    final estimatedTokens = estimateTokens(history);
+
+    // If total estimated tokens is within the safety budget, no trimming needed!
+    if (estimatedTokens <= maxSafeBudget) return;
+
+    // 2. Identify and preserve system prompts and the very first user request (Goal Safety Guard)
     final systemPrompts = history
         .where((m) => m.role == MessageRole.system)
         .take(2)
         .toList();
 
-    // Find safe cut point — never cut between tool call and result
-    int cutIndex = history.length - keepTail;
+    Message? firstUserMsg;
+    for (final m in history) {
+      if (m.role == MessageRole.user) {
+        firstUserMsg = m;
+        break;
+      }
+    }
 
-    // Walk backward to find a safe boundary
+    // Build the head section to keep unconditionally
+    final head = <Message>[...systemPrompts];
+    if (firstUserMsg != null && !head.any((m) => m.uuid == firstUserMsg!.uuid)) {
+      head.add(firstUserMsg);
+    }
+
+    // Calculate token size of the head section
+    final headTokens = estimateTokens(head);
+
+    // The remaining budget is allocated to recent messages (tail)
+    final historyBudget = maxSafeBudget - headTokens;
+
+    int accumulatedTokens = 0;
+    int cutIndex = history.length - 1;
+
+    // 3. Walk backward from the tail to collect recent messages that fit the budget
+    while (cutIndex >= 0) {
+      final msg = history[cutIndex];
+      // Skip system prompts and first user message since they are already anchored in 'head'
+      if (msg.role == MessageRole.system || (firstUserMsg != null && msg.uuid == firstUserMsg.uuid)) {
+        cutIndex--;
+        continue;
+      }
+
+      final msgTokens = (msg.content.length / 3.8).ceil() + 3; // content + role overhead
+      if (accumulatedTokens + msgTokens > historyBudget) {
+        break; // Out of budget, cut here
+      }
+      accumulatedTokens += msgTokens;
+      cutIndex--;
+    }
+
+    // 4. Align to a safe cut boundary (never cut between tool call and result)
+    cutIndex = cutIndex.clamp(0, history.length - 1);
     while (cutIndex > 0 && cutIndex < history.length) {
       final msg = history[cutIndex];
-      // If we're at a tool result, include the preceding assistant message too
       if (msg.role == MessageRole.tool) {
         cutIndex--;
         continue;
       }
-      // If we're at an assistant message that triggered tools,
-      // check if next message is a tool result
       if (msg.role == MessageRole.assistant &&
           cutIndex + 1 < history.length &&
           history[cutIndex + 1].role == MessageRole.tool) {
@@ -108,15 +152,20 @@ class AetherHistoryCompactor {
       break;
     }
 
+    // Slice off and rebuild history safely
     final tail = history.sublist(cutIndex);
     history.clear();
-    history.addAll(systemPrompts);
+    history.addAll(head);
     for (final msg in tail) {
       if (!history.any((h) => h.uuid == msg.uuid)) {
         history.add(msg);
       }
     }
+
+    logger.d('🔱 [TrimHistory] Dynamic trim executed: ~$estimatedTokens → ~${estimateTokens(history)} tokens '
+        '(Target budget: $maxSafeBudget, Model Context Limit: $limit)');
   }
+
 
   /// 🔱 Supreme Fix 2: Compact stale system messages.
   void compactSystemMessages(List<Message> history, int currentTurn) {
@@ -198,26 +247,66 @@ class AetherHistoryCompactor {
   }
 
   /// 🔱 Core Extraction: AUTO-COMPACT / AI SUMMARIZATION
+  /// Dynamically decides when to compact based on contextLimit and isLocalMode (resource-aware).
   Future<void> autoCompactIfNeeded(
     List<Message> history,
     Future<Stream<InferenceEvent>> Function(List<Message> history) callModel,
     ChatMode chatMode, {
     String? sessionId,
     required StreamController<Map<String, dynamic>> eventController,
+    int? contextLimit,
+    bool isLocalMode = false,
   }) async {
-    // Don't compact if history is small enough
-    if (history.length < 30) return;
-
     // Circuit breaker: stop after repeated failures
     if (_autoCompactFailures >= _maxAutoCompactFailures) return;
 
-    // Estimate tokens
-    final estimatedTokens = estimateTokens(history);
-    if (estimatedTokens < 6000) return;
+    final limit = contextLimit ?? 8192;
+    
+    // 🔱 Dynamic Compaction Thresholds (leaves 30%+ headroom)
+    int compactThreshold = 4000;
+    if (isLocalMode) {
+      // For local models on mobile, RAM guard restricts active context budget to 60% of 8K limit
+      compactThreshold = (limit * 0.60).toInt();
+    } else if (limit > 16384 && limit <= 131072) {
+      compactThreshold = 90000; // 128K cloud models (llama-3.3, nemotron)
+    } else if (limit > 131072) {
+      compactThreshold = 700000; // 1M+ Gemini models
+    }
 
-    logger.d('🔱 [AutoCompact] Triggered: ~$estimatedTokens tokens, ${history.length} messages');
+    // Estimate tokens in the current history
+    final estimatedTokens = estimateTokens(history);
+    
+    if (estimatedTokens < compactThreshold) return;
+
+    logger.d('🔱 [AutoCompact] Triggered: ~$estimatedTokens tokens (Threshold: $compactThreshold), ${history.length} messages');
+
+    // 🔱 Local Resource-Aware Bypass: Zero-Cost Compaction
+    // Running AI compaction on-device takes 15s and drains battery.
+    // Instead, do instant local pruning and sliding-window truncation.
+    if (isLocalMode) {
+      logger.d('🔱 [AutoCompact] Local Mode bypass: Executing Zero-Cost local pruning...');
+      
+      // Stage 1: Smart Tool Output Pruning
+      final systemPrompts = history.where((m) => m.role == MessageRole.system).toList();
+      final nonSystem = history.where((m) => m.role != MessageRole.system).toList();
+      final prunedNonSystem = pruneToolOutputs(nonSystem);
+      
+      history.clear();
+      history.addAll(systemPrompts);
+      history.addAll(prunedNonSystem);
+
+      // Stage 2: Nuclear sliding window truncation
+      trimHistory(history, chatMode, contextLimit: limit, isLocalMode: true);
+      
+      eventController.add({
+        'type': 'status',
+        'data': 'Local memory optimized for speed and battery life.',
+      });
+      return;
+    }
 
     try {
+
       // 1. Preserve system prompts (first 2 messages) - Head Turn Protection
       final systemPrompts = history
           .where((m) => m.role == MessageRole.system)

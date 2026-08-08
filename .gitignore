@@ -5,9 +5,11 @@
 *.swp
 .DS_Store
 .atom/
+.build/
 .buildlog/
 .history
 .svn/
+.swiftpm/
 migrate_working_dir/
 
 # IntelliJ related
@@ -125,3 +127,16 @@ HEART_SNATCH_EXTRACT/
 \#\#plan_mode_sutra/
 scratch/
 scratch_nvidia_add.py
+
+# Debug and scratch files
+scratch_debug.dart
+scratch_*.dart
+
+# Session exports (may contain conversation data)
+kharwal_export_*.md
+
+# Test sandbox directories (auto-generated)
+test_sandbox_*/
+
+# Root dev notes
+problem.txt

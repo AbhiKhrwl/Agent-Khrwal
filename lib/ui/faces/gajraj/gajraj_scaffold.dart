@@ -26,7 +26,12 @@ import '../../../core/infrastructure/prompts/kharwal_behavior.dart';
 import 'package:apex_lite/cli/commands/command_registry.dart';
 import 'package:apex_lite/cli/commands/command_parser.dart';
 import 'package:apex_lite/cli/commands/apex_command.dart';
+import 'package:apex_lite/cli/services/config_manager.dart';
+import 'package:apex_lite/core/infrastructure/services/hybrid_inference_coordinator.dart';
+import 'package:apex_lite/core/infrastructure/services/plan_mode_coordinator.dart';
 import 'package:apex_lite/cli/services/plugin_manager.dart';
+import 'package:apex_lite/cli/services/inference_bridges/model_fetchers.dart';
+import '../../../core/infrastructure/tools/agent_tool.dart';
 
 
 class GajrajOracleScaffold extends StatefulWidget {
@@ -35,6 +40,7 @@ class GajrajOracleScaffold extends StatefulWidget {
   final SessionManager sessionManager;
   final String sandboxPath;
   final SpectralOps spectralOps;
+  final HybridInferenceCoordinator coordinator;
 
   const GajrajOracleScaffold({
     super.key,
@@ -43,6 +49,7 @@ class GajrajOracleScaffold extends StatefulWidget {
     required this.sessionManager,
     required this.sandboxPath,
     required this.spectralOps,
+    required this.coordinator,
   });
 
   @override
@@ -61,6 +68,7 @@ class _GajrajOracleScaffoldState extends State<GajrajOracleScaffold>
   final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
 
   StreamSubscription<Map<String, dynamic>>? _eventSubscription;
+  StreamSubscription<String>? _coordinatorStatusSub;
   bool _isProcessing = false;
   String _streamingBuffer = '';
   ChatMode _chatMode = ChatMode.justTalk;
@@ -82,6 +90,23 @@ class _GajrajOracleScaffoldState extends State<GajrajOracleScaffold>
   void initState() {
     super.initState();
     _eventSubscription = widget.core.eventStream.listen(_onCoreEvent);
+    
+    _coordinatorStatusSub = widget.coordinator.statusStream.listen((status) {
+      if (mounted) {
+        setState(() {
+          // Find if the last entry is a status chip, and update it in-place
+          // to prevent cluttering the chat view, or append a fresh status chip.
+          final lastIdx = _chatData.lastIndexWhere((d) => d['type'] == 'status');
+          if (lastIdx >= 0 && lastIdx == _chatData.length - 1) {
+            _chatData[lastIdx] = {'type': 'status', 'data': status};
+          } else {
+            _chatData.add({'type': 'status', 'data': status});
+          }
+          _scrollToBottom();
+        });
+      }
+    });
+
     _inputController.addListener(_onInputChanged);
     _loadPlugins();
 
@@ -664,6 +689,7 @@ class _GajrajOracleScaffoldState extends State<GajrajOracleScaffold>
   void dispose() {
     _inputController.removeListener(_onInputChanged);
     _eventSubscription?.cancel();
+    _coordinatorStatusSub?.cancel();
     _inputController.dispose();
     _scrollController.dispose();
     _audioRecorder.dispose();
@@ -1085,12 +1111,15 @@ class _GajrajOracleScaffoldState extends State<GajrajOracleScaffold>
                 children: [
                   Row(
                     children: [
-                      const Text(
-                        'Agent Kharwal',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 16,
+                      const Expanded(
+                        child: Text(
+                          'Agent Kharwal',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 16,
+                          ),
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -1137,6 +1166,66 @@ class _GajrajOracleScaffoldState extends State<GajrajOracleScaffold>
         ),
       ),
       actions: [
+        // 🔱 Swarm active agents status button
+        Builder(
+          builder: (context) {
+            final activeCount = SubAgentRegistry.activeAgents.values
+                .where((a) => a['status'] == 'in_progress' || a['status'] == 'todo')
+                .length;
+            final isRunning = activeCount > 0;
+            return IconButton(
+              icon: Stack(
+                alignment: Alignment.center,
+                children: [
+                  Icon(
+                    Icons.groups_rounded,
+                    color: isRunning ? DivinePalette.neonCyan : Colors.white70,
+                    size: 22,
+                  ),
+                  if (isRunning)
+                    Positioned(
+                      right: 0,
+                      top: 0,
+                      child: Container(
+                        padding: const EdgeInsets.all(1.5),
+                        decoration: BoxDecoration(
+                          color: DivinePalette.matrixGreen,
+                          shape: BoxShape.circle,
+                        ),
+                        constraints: const BoxConstraints(
+                          minWidth: 10,
+                          minHeight: 10,
+                        ),
+                        child: Text(
+                          '$activeCount',
+                          style: const TextStyle(
+                            color: Colors.black,
+                            fontSize: 7,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              tooltip: 'Swarm Agents Status ($activeCount active)',
+              onPressed: () => _showSwarmStatusDialog(),
+              splashRadius: 20,
+            );
+          }
+        ),
+        // 🔱 Core Settings button
+        IconButton(
+          icon: const Icon(
+            Icons.settings_rounded,
+            color: Colors.white70,
+            size: 22,
+          ),
+          tooltip: 'Core Engine Settings',
+          onPressed: () => _showCoreSettingsDialog(),
+          splashRadius: 20,
+        ),
         // 🔱 Activity Log button — opens drawer showing tool execution history
         IconButton(
           icon: const Icon(
@@ -1617,6 +1706,181 @@ class _GajrajOracleScaffoldState extends State<GajrajOracleScaffold>
       ),
     );
   }
+
+  void _showSwarmStatusDialog() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF0F1218),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            final agents = SubAgentRegistry.activeAgents.values.toList();
+            return Container(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.groups_rounded, color: DivinePalette.neonCyan, size: 24),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Swarm Agents Control',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white54, size: 20),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  if (agents.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 24),
+                      child: Center(
+                        child: Text(
+                          'No agents spawned in this session.',
+                          style: TextStyle(color: Colors.white38, fontSize: 13),
+                        ),
+                      ),
+                    )
+                  else
+                    Flexible(
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: agents.length,
+                        itemBuilder: (context, index) {
+                          final agent = agents[index];
+                          final id = agent['agentId'] ?? '';
+                          final name = agent['name'] ?? 'sub-agent';
+                          final status = agent['status'] ?? 'unknown';
+                          final desc = agent['description'] ?? '';
+                          final isRunning = status == 'in_progress' || status == 'todo';
+
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 8),
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF161A23),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: isRunning ? DivinePalette.neonCyan.withAlpha(40) : Colors.white10,
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Text(
+                                            name,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 14,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                            decoration: BoxDecoration(
+                                              color: isRunning
+                                                  ? DivinePalette.neonCyan.withAlpha(20)
+                                                  : Colors.white10,
+                                              borderRadius: BorderRadius.circular(4),
+                                            ),
+                                            child: Text(
+                                              status.toUpperCase(),
+                                              style: TextStyle(
+                                                color: isRunning ? DivinePalette.neonCyan : Colors.white38,
+                                                fontSize: 9,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ),
+                                          Builder(
+                                            builder: (context) {
+                                              final createdAtStr = agent['created_at']?.toString();
+                                              if (createdAtStr == null) return const SizedBox.shrink();
+                                              final createdAt = DateTime.tryParse(createdAtStr);
+                                              if (createdAt == null) return const SizedBox.shrink();
+                                              final diff = DateTime.now().difference(createdAt);
+                                              final elapsed = diff.inMinutes > 0 ? '${diff.inMinutes}m ago' : '${diff.inSeconds}s ago';
+                                              return Padding(
+                                                padding: const EdgeInsets.only(left: 6),
+                                                child: Text(
+                                                  elapsed,
+                                                  style: const TextStyle(
+                                                    color: Colors.white38,
+                                                    fontSize: 10,
+                                                  ),
+                                                ),
+                                              );
+                                            }
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        desc,
+                                        style: const TextStyle(color: Colors.white70, fontSize: 11),
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                if (isRunning) ...[
+                                  const SizedBox(width: 8),
+                                  IconButton(
+                                    icon: const Icon(Icons.stop_circle_outlined, color: Colors.redAccent, size: 22),
+                                    tooltip: 'Terminate Agent',
+                                    onPressed: () {
+                                      SubAgentRegistry.activeAgents[id]?['status'] = 'stopped';
+                                      final supervisor = AgentTool.supervisors[id];
+                                      if (supervisor != null) {
+                                        supervisor.cancellationToken.cancel();
+                                      }
+                                      setModalState(() {});
+                                      setState(() {});
+                                    },
+                                  ),
+                                ],
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _showCoreSettingsDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => const _CoreSettingsDialog(),
+    );
+  }
 }
 
 class _RecoveryIcon extends StatefulWidget {
@@ -1763,7 +2027,12 @@ class _ConsensusDialogState extends State<_ConsensusDialog>
       if (_moderateCommands.contains(firstWord)) return _RiskLevel.moderate;
       return _RiskLevel.dangerous;
     }
-    if (name == 'file_write' || name == 'file_edit' || name == 'data_injector' || name == 'voice_munshi') {
+    if (name == 'file_write') {
+      final path = (req.params['path'] ?? '').toString();
+      final isDangerous = path.startsWith('/') || path.contains('..') || path.contains('~');
+      return isDangerous ? _RiskLevel.dangerous : _RiskLevel.safe;
+    }
+    if (name == 'file_edit' || name == 'data_injector' || name == 'voice_munshi') {
       return _RiskLevel.dangerous;
     }
     if (name.startsWith('mcp__') ||
@@ -2335,3 +2604,1164 @@ enum _RiskLevel {
   final String label;
   const _RiskLevel(this.color, this.label);
 }
+
+/// Frosted-glass, glassmorphic configurations dialog for cloud models, local settings, and execution modes
+class _CoreSettingsDialog extends StatefulWidget {
+  const _CoreSettingsDialog();
+
+  @override
+  State<_CoreSettingsDialog> createState() => _CoreSettingsDialogState();
+}
+
+class _CoreSettingsDialogState extends State<_CoreSettingsDialog> {
+  ExecutionMode _executionMode = ExecutionMode.local;
+  
+  // Controller maps for provider properties
+  final Map<String, TextEditingController> _apiKeyControllers = {};
+  final Map<String, TextEditingController> _modelControllers = {};
+  final Map<String, TextEditingController> _urlControllers = {};
+  final Map<String, TextEditingController> _limitControllers = {};
+  final Map<String, bool> _obfuscateKeys = {};
+  final Map<String, bool> _expandedProviders = {};
+
+  // API model fetching state variables
+  final Map<String, List<String>> _fetchedModels = {};
+  final Map<String, bool> _fetching = {};
+  final Map<String, String?> _fetchErrors = {};
+
+  final List<String> _providerTypes = [
+    'gemini',
+    'groq',
+    'nvidia',
+    'openrouter',
+    if (!Platform.isAndroid && !Platform.isIOS) 'ollama',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _executionMode = ConfigManager.loadExecutionMode();
+    final configs = ConfigManager.load();
+
+    for (final type in _providerTypes) {
+      final config = configs.where((c) => c.type == type).firstOrNull;
+      _apiKeyControllers[type] = TextEditingController(text: config?.apiKey ?? '');
+      _modelControllers[type] = TextEditingController(text: config?.model ?? _defaultModelForType(type));
+      _urlControllers[type] = TextEditingController(text: config?.baseUrl ?? _defaultUrlForType(type));
+      _limitControllers[type] = TextEditingController(text: config?.contextLimit != null ? config!.contextLimit.toString() : '');
+      _obfuscateKeys[type] = true;
+      _expandedProviders[type] = false;
+      final cached = ConfigManager.getCachedModels(type);
+      if (cached != null) {
+        _fetchedModels[type] = cached;
+      }
+    }
+    
+    // Auto-expand active mode configurations for easier edit
+    if (_executionMode != ExecutionMode.local) {
+      if (configs.isNotEmpty) {
+        _expandedProviders[configs.first.type] = true;
+      } else {
+        _expandedProviders['gemini'] = true;
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    for (final c in _apiKeyControllers.values) {
+      c.dispose();
+    }
+    for (final c in _modelControllers.values) {
+      c.dispose();
+    }
+    for (final c in _urlControllers.values) {
+      c.dispose();
+    }
+    for (final c in _limitControllers.values) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _fetchModels(String type) async {
+    final apiKey = _apiKeyControllers[type]?.text.trim() ?? '';
+    final url = _urlControllers[type]?.text.trim() ?? '';
+
+    if (type == 'gemini' && apiKey.isEmpty) return;
+    if (type == 'groq' && apiKey.isEmpty) return;
+    if (type == 'nvidia' && apiKey.isEmpty) return;
+
+    setState(() {
+      _fetching[type] = true;
+      _fetchErrors[type] = null;
+    });
+
+    try {
+      List<String> models = [];
+      if (type == 'gemini') {
+        models = await fetchGeminiModels(apiKey);
+      } else if (type == 'groq') {
+        models = await fetchGroqModels(apiKey);
+      } else if (type == 'nvidia') {
+        models = await fetchNvidiaModels(apiKey);
+      } else if (type == 'openrouter') {
+        models = await fetchOpenRouterModels();
+      } else if (type == 'ollama') {
+        final baseUrl = url.isNotEmpty ? url : 'http://localhost:11434';
+        models = await fetchOllamaModels(baseUrl, apiKey: apiKey);
+      }
+
+      setState(() {
+        _fetchedModels[type] = models;
+        _fetching[type] = false;
+      });
+      if (models.isNotEmpty) {
+        ConfigManager.saveModelCache(type, models);
+      }
+    } catch (e) {
+      setState(() {
+        _fetchErrors[type] = e.toString();
+        _fetching[type] = false;
+      });
+    }
+  }
+
+  void _showModelSelectorBottomSheet(String type) {
+    final activeColor = _executionMode == ExecutionMode.local
+        ? DivinePalette.matrixGreen
+        : _executionMode == ExecutionMode.cloud
+            ? DivinePalette.celestialGold
+            : DivinePalette.neonCyan;
+
+    String searchQuery = '';
+    bool showOnlyFree = false;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF10141D),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        side: BorderSide(color: Colors.white12),
+      ),
+      builder: (BuildContext context) {
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter setSheetState) {
+            // Get candidate models
+            final List<String> apiList = _fetchedModels[type] ?? [];
+            final List<String> fallbackList = PlanModeCoordinator.getProviderModels(type);
+            final List<String> sourceList = apiList.isNotEmpty ? apiList : fallbackList;
+
+            // Apply search and free filters
+            final List<String> filteredList = sourceList.where((m) {
+              if (showOnlyFree) {
+                final isFree = m.toLowerCase().contains('free') || type == 'ollama';
+                if (!isFree) return false;
+              }
+              if (searchQuery.isNotEmpty) {
+                if (!m.toLowerCase().contains(searchQuery.toLowerCase())) {
+                  return false;
+                }
+              }
+              return true;
+            }).toList();
+
+            final isFetching = _fetching[type] == true;
+            final fetchError = _fetchErrors[type];
+
+            return Padding(
+              padding: EdgeInsets.only(
+                top: 20,
+                left: 16,
+                right: 16,
+                bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Title + Refresh row
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'SELECT ${_providerDisplayName(type).toUpperCase()} MODEL',
+                        style: TextStyle(
+                          color: activeColor,
+                          fontSize: 13,
+                          fontWeight: FontWeight.bold,
+                          fontFamily: 'monospace',
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                      if (isFetching)
+                        const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.white38),
+                          ),
+                        )
+                      else
+                        IconButton(
+                          icon: const Icon(Icons.refresh_rounded, color: Colors.white54, size: 18),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          onPressed: () async {
+                            setSheetState(() {});
+                            await _fetchModels(type);
+                            setSheetState(() {});
+                          },
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Search box
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withAlpha(6),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.white.withAlpha(10)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.search_rounded, color: Colors.white38, size: 16),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: TextField(
+                            onChanged: (val) {
+                              setSheetState(() {
+                                searchQuery = val;
+                              });
+                            },
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12.5,
+                              fontFamily: 'monospace',
+                            ),
+                            decoration: const InputDecoration(
+                              border: InputBorder.none,
+                              isDense: true,
+                              hintText: 'Search models...',
+                              hintStyle: TextStyle(color: Colors.white24, fontSize: 12.5),
+                              contentPadding: EdgeInsets.symmetric(vertical: 10),
+                            ),
+                          ),
+                        ),
+                        if (searchQuery.isNotEmpty)
+                          GestureDetector(
+                            onTap: () {
+                              setSheetState(() {
+                                searchQuery = '';
+                              });
+                            },
+                            child: const Icon(Icons.close_rounded, color: Colors.white38, size: 16),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+
+                  // Show Free Models Only toggle/row
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Show Free Models Only',
+                        style: TextStyle(
+                          color: Colors.white54,
+                          fontSize: 12,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                      Switch(
+                        value: showOnlyFree,
+                        activeThumbColor: activeColor,
+                        activeTrackColor: activeColor.withAlpha(120),
+                        onChanged: (val) {
+                          setSheetState(() {
+                            showOnlyFree = val;
+                          });
+                        },
+                      ),
+                    ],
+                  ),
+                  const Divider(color: Colors.white12, height: 20),
+
+                  // Error message
+                  if (fetchError != null) ...[
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.red.withAlpha(15),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.red.withAlpha(30)),
+                      ),
+                      child: Text(
+                        '⚠️ Fetch failed: $fetchError\nShowing fallback models.',
+                        style: const TextStyle(color: Colors.redAccent, fontSize: 11, fontFamily: 'monospace'),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                  ],
+
+                  // List of models
+                  Container(
+                    constraints: const BoxConstraints(maxHeight: 250),
+                    child: filteredList.isEmpty
+                        ? const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 24),
+                            child: Center(
+                              child: Text(
+                                'No matching models found.',
+                                style: TextStyle(color: Colors.white38, fontSize: 12, fontFamily: 'monospace'),
+                              ),
+                            ),
+                          )
+                        : ListView.builder(
+                            shrinkWrap: true,
+                            itemCount: filteredList.length,
+                            itemBuilder: (context, index) {
+                              final model = filteredList[index];
+                              final isSelected = _modelControllers[type]?.text.trim() == model;
+
+                              return Container(
+                                margin: const EdgeInsets.only(bottom: 4),
+                                decoration: BoxDecoration(
+                                  color: isSelected ? activeColor.withAlpha(15) : Colors.transparent,
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(
+                                    color: isSelected ? activeColor.withAlpha(40) : Colors.transparent,
+                                  ),
+                                ),
+                                child: ListTile(
+                                  onTap: () {
+                                    _modelControllers[type]?.text = model;
+                                    setState(() {});
+                                    Navigator.pop(context);
+                                  },
+                                  dense: true,
+                                  title: Text(
+                                    model,
+                                    style: TextStyle(
+                                      color: isSelected ? Colors.white : Colors.white70,
+                                      fontSize: 12,
+                                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                      fontFamily: 'monospace',
+                                    ),
+                                  ),
+                                  trailing: isSelected
+                                      ? Icon(Icons.check_rounded, color: activeColor, size: 16)
+                                      : null,
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _showLimitSelectorBottomSheet(String type) {
+    final activeColor = _executionMode == ExecutionMode.local
+        ? DivinePalette.matrixGreen
+        : _executionMode == ExecutionMode.cloud
+            ? DivinePalette.celestialGold
+            : DivinePalette.neonCyan;
+
+    final List<Map<String, dynamic>> options = [
+      {'label': 'Auto-detect Limit (Recommended)', 'value': null},
+      {'label': '8k   (8,192 tokens — Ollama/Local Safe)', 'value': 8192},
+      {'label': '16k  (16,384 tokens — Ollama/Local Medium)', 'value': 16384},
+      {'label': '32k  (32,768 tokens — Gemma 4 / Small Cloud)', 'value': 32768},
+      {'label': '64k  (65,536 tokens — Mid Cloud)', 'value': 65536},
+      {'label': '128k (131,072 tokens — Llama 3.3 / Nemotron)', 'value': 131072},
+      {'label': '1m   (1,048,576 tokens — Gemini / Kimi)', 'value': 1000000},
+      {'label': 'Custom Limit Value...', 'value': -1},
+    ];
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF10141D),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        side: BorderSide(color: Colors.white12),
+      ),
+      builder: (BuildContext context) {
+        final currentText = _limitControllers[type]?.text.trim() ?? '';
+        
+        return Padding(
+          padding: EdgeInsets.only(
+            top: 20,
+            left: 16,
+            right: 16,
+            bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'SELECT CONTEXT LIMIT FOR ${_providerDisplayName(type).toUpperCase()}',
+                style: TextStyle(
+                  color: activeColor,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  fontFamily: 'monospace',
+                  letterSpacing: 0.5,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                constraints: const BoxConstraints(maxHeight: 320),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: options.length,
+                  itemBuilder: (context, index) {
+                    final opt = options[index];
+                    final optVal = opt['value'];
+                    final label = opt['label'] as String;
+                    
+                    bool isSelected = false;
+                    if (optVal == null && currentText.isEmpty) {
+                      isSelected = true;
+                    } else if (optVal != null && optVal != -1 && currentText == optVal.toString()) {
+                      isSelected = true;
+                    } else if (optVal == -1) {
+                      final predefinedValues = options.map((o) => o['value']).where((v) => v != null && v != -1).map((v) => v.toString()).toList();
+                      if (currentText.isNotEmpty && !predefinedValues.contains(currentText)) {
+                        isSelected = true;
+                      }
+                    }
+
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 4),
+                      decoration: BoxDecoration(
+                        color: isSelected ? activeColor.withAlpha(15) : Colors.transparent,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: isSelected ? activeColor.withAlpha(40) : Colors.transparent,
+                        ),
+                      ),
+                      child: ListTile(
+                        onTap: () {
+                          Navigator.pop(context);
+                          if (optVal == -1) {
+                            _showCustomLimitDialog(type);
+                          } else {
+                            _limitControllers[type]?.text = optVal == null ? '' : optVal.toString();
+                            setState(() {});
+                          }
+                        },
+                        dense: true,
+                        title: Text(
+                          label,
+                          style: TextStyle(
+                            color: isSelected ? Colors.white : Colors.white70,
+                            fontSize: 12,
+                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                        trailing: isSelected
+                            ? Icon(Icons.check_rounded, color: activeColor, size: 16)
+                            : null,
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showCustomLimitDialog(String type) {
+    final activeColor = _executionMode == ExecutionMode.local
+        ? DivinePalette.matrixGreen
+        : _executionMode == ExecutionMode.cloud
+            ? DivinePalette.celestialGold
+            : DivinePalette.neonCyan;
+
+    final controller = TextEditingController(text: _limitControllers[type]?.text);
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF10141D),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+            side: const BorderSide(color: Colors.white12),
+          ),
+          title: Text(
+            'CUSTOM CONTEXT LIMIT',
+            style: TextStyle(color: activeColor, fontSize: 13, fontWeight: FontWeight.bold, fontFamily: 'monospace'),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Enter limit in tokens (e.g. 50000 or 128k). 70% active ceiling (60% local) is applied automatically.',
+                style: TextStyle(color: Colors.white38, fontSize: 10),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                autofocus: true,
+                style: const TextStyle(color: Colors.white, fontSize: 13, fontFamily: 'monospace'),
+                decoration: const InputDecoration(
+                  hintText: 'e.g. 128k or 50000',
+                  hintStyle: TextStyle(color: Colors.white24),
+                  focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white30)),
+                  enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white10)),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('CANCEL', style: TextStyle(color: Colors.white38, fontSize: 11)),
+            ),
+            TextButton(
+              onPressed: () {
+                final input = controller.text.trim().toLowerCase();
+                int? parsedLimit;
+                if (input.isNotEmpty) {
+                  if (input.endsWith('k')) {
+                    final val = double.tryParse(input.substring(0, input.length - 1));
+                    if (val != null) parsedLimit = (val * 1024).toInt();
+                  } else if (input.endsWith('m')) {
+                    final val = double.tryParse(input.substring(0, input.length - 1));
+                    if (val != null) parsedLimit = (val * 1024 * 1024).toInt();
+                  } else {
+                    parsedLimit = int.tryParse(input);
+                  }
+                }
+
+                _limitControllers[type]?.text = parsedLimit != null ? parsedLimit.toString() : '';
+                setState(() {});
+                Navigator.pop(context);
+              },
+              child: Text('SAVE', style: TextStyle(color: activeColor, fontSize: 11, fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  String _defaultModelForType(String type) {
+    switch (type) {
+      case 'gemini':
+        return 'gemini-2.5-flash';
+      case 'groq':
+        return 'llama-3.3-70b-versatile';
+      case 'nvidia':
+        return 'meta/llama-3.1-405b-instruct';
+      case 'openrouter':
+        return 'google/gemma-2-9b-it:free';
+      case 'ollama':
+        return 'gemma2:2b';
+      default:
+        return '';
+    }
+  }
+
+  String _defaultUrlForType(String type) {
+    if (type == 'ollama') return 'http://localhost:11434';
+    return '';
+  }
+
+  String _providerDisplayName(String type) {
+    switch (type) {
+      case 'gemini':
+        return 'Google Gemini';
+      case 'groq':
+        return 'Groq Cloud';
+      case 'nvidia':
+        return 'NVIDIA NIM';
+      case 'openrouter':
+        return 'OpenRouter';
+      case 'ollama':
+        return 'Ollama (Local)';
+      default:
+        return type.toUpperCase();
+    }
+  }
+
+  void _saveSettings() {
+    HapticFeedback.mediumImpact();
+    
+    // 1. Save Execution Mode
+    ConfigManager.saveExecutionMode(_executionMode);
+
+    // 2. Build and save provider list
+    final List<ProviderConfig> configs = [];
+    for (final type in _providerTypes) {
+      final key = _apiKeyControllers[type]!.text.trim();
+      final model = _modelControllers[type]!.text.trim();
+      final url = _urlControllers[type]!.text.trim();
+      final limitStr = _limitControllers[type]!.text.trim();
+      final limit = int.tryParse(limitStr);
+
+      // Only save if either key, model, or custom url is provided
+      if (key.isNotEmpty || model.isNotEmpty || url.isNotEmpty) {
+        configs.add(ProviderConfig(
+          type: type,
+          apiKey: key,
+          model: model,
+          baseUrl: url,
+          contextLimit: limit,
+        ));
+      }
+    }
+    ConfigManager.save(configs);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.check_circle_rounded, color: DivinePalette.matrixGreen, size: 18),
+            const SizedBox(width: 8),
+            Text('Configurations persisted successfully! Mode: ${_executionMode.name.toUpperCase()}',
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
+          ],
+        ),
+        backgroundColor: const Color(0xFF0F1218),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        margin: const EdgeInsets.all(16),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+
+    Navigator.pop(context);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = _executionMode == ExecutionMode.local
+        ? DivinePalette.matrixGreen
+        : _executionMode == ExecutionMode.cloud
+            ? DivinePalette.celestialGold
+            : DivinePalette.neonCyan;
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 420),
+        decoration: BoxDecoration(
+          color: const Color(0xFF10141D),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(color: accent.withAlpha(40)),
+          boxShadow: [
+            BoxShadow(
+              color: accent.withAlpha(15),
+              blurRadius: 30,
+              spreadRadius: 2,
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Header
+            Container(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+              decoration: BoxDecoration(
+                border: Border(bottom: BorderSide(color: Colors.white.withAlpha(8))),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 36, height: 36,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: accent.withAlpha(15),
+                      border: Border.all(color: accent.withAlpha(40)),
+                    ),
+                    child: Icon(Icons.settings_suggest_rounded, color: accent, size: 18),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Core Engine Settings',
+                            style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 0.5)),
+                        SizedBox(height: 2),
+                        Text('Select execution mode & API endpoints',
+                            style: TextStyle(color: Colors.white38, fontSize: 11)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            
+            // Content (scrollable)
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _sectionLabel('CORE EXECUTION MODE'),
+                    const SizedBox(height: 12),
+                    _buildModeSelector(),
+                    const SizedBox(height: 24),
+                    _buildModeDescription(),
+                    const SizedBox(height: 24),
+                    _sectionLabel('CLOUD ENDPOINT CONFIGURATIONS'),
+                    const SizedBox(height: 12),
+                    ..._providerTypes.map((type) => _buildProviderCard(type)),
+                  ],
+                ),
+              ),
+            ),
+
+            // Actions footer
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                border: Border(top: BorderSide(color: Colors.white.withAlpha(8))),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          side: BorderSide(color: Colors.white.withAlpha(12)),
+                        ),
+                      ),
+                      child: const Text('Cancel', style: TextStyle(color: Colors.white54, fontSize: 13, fontWeight: FontWeight.w600, fontFamily: 'monospace')),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    flex: 2,
+                    child: ElevatedButton.icon(
+                      onPressed: _saveSettings,
+                      icon: const Icon(Icons.save_rounded, size: 16),
+                      label: const Text('Save Settings', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, fontFamily: 'monospace')),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: accent,
+                        foregroundColor: Colors.black,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        elevation: 4,
+                        shadowColor: accent.withAlpha(80),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildModeSelector() {
+    return Row(
+      children: [
+        _modeButton(ExecutionMode.local, 'LOCAL', '🔒', DivinePalette.matrixGreen),
+        const SizedBox(width: 8),
+        _modeButton(ExecutionMode.cloud, 'CLOUD', '☁️', DivinePalette.celestialGold),
+        const SizedBox(width: 8),
+        _modeButton(ExecutionMode.hybrid, 'HYBRID', '🔱', DivinePalette.neonCyan),
+      ],
+    );
+  }
+
+  Widget _modeButton(ExecutionMode mode, String label, String emoji, Color color) {
+    final active = _executionMode == mode;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () {
+          HapticFeedback.selectionClick();
+          setState(() => _executionMode = mode);
+        },
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 250),
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: active ? color.withAlpha(15) : Colors.white.withAlpha(5),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: active ? color : Colors.white.withAlpha(15),
+              width: active ? 1.5 : 1,
+            ),
+            boxShadow: active
+                ? [
+                    BoxShadow(
+                      color: color.withAlpha(20),
+                      blurRadius: 10,
+                      spreadRadius: 1,
+                    )
+                  ]
+                : null,
+          ),
+          child: Column(
+            children: [
+              Text(emoji, style: const TextStyle(fontSize: 18)),
+              const SizedBox(height: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  color: active ? color : Colors.white54,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  fontFamily: 'monospace',
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildModeDescription() {
+    final title = _executionMode == ExecutionMode.local
+        ? 'Local-Only (100% Offline)'
+        : _executionMode == ExecutionMode.cloud
+            ? 'Cloud-Only (High Performance)'
+            : 'Adaptive Hybrid (Smart Failover)';
+
+    final desc = _executionMode == ExecutionMode.local
+        ? 'Runs entirely on your device using LiteRT. Zero cost, complete data privacy, and operates without internet access.'
+        : _executionMode == ExecutionMode.cloud
+            ? 'Connects directly to secure, high-speed cloud APIs. Gives access to larger, smarter models like Llama 3.3 70B without phone battery drain.'
+            : 'Probes on-device LiteRT first. If the local model is busy, throws a GPU memory overflow, or runs out of local limits, it silently failovers to the cloud.';
+
+    final accentColor = _executionMode == ExecutionMode.local
+        ? DivinePalette.matrixGreen
+        : _executionMode == ExecutionMode.cloud
+            ? DivinePalette.celestialGold
+            : DivinePalette.neonCyan;
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: accentColor.withAlpha(8),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: accentColor.withAlpha(20)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.info_outline_rounded, color: accentColor, size: 14),
+              const SizedBox(width: 6),
+              Text(
+                title,
+                style: TextStyle(color: accentColor, fontSize: 12, fontWeight: FontWeight.bold, fontFamily: 'monospace'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            desc,
+            style: const TextStyle(color: Colors.white60, fontSize: 11.5, height: 1.4),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProviderCard(String type) {
+    final expanded = _expandedProviders[type] == true;
+    final color = _executionMode == ExecutionMode.local
+        ? DivinePalette.matrixGreen
+        : _executionMode == ExecutionMode.cloud
+            ? DivinePalette.celestialGold
+            : DivinePalette.neonCyan;
+            
+    final hasKey = _apiKeyControllers[type]!.text.trim().isNotEmpty || 
+                  (type == 'ollama' && _modelControllers[type]!.text.trim().isNotEmpty);
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: Colors.white.withAlpha(4),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: expanded ? color.withAlpha(35) : Colors.white.withAlpha(8),
+        ),
+      ),
+      child: Column(
+        children: [
+          // Header toggler
+          ListTile(
+            onTap: () {
+              final nextExpanded = !expanded;
+              setState(() {
+                _expandedProviders[type] = nextExpanded;
+              });
+              if (nextExpanded && _fetching[type] != true) {
+                final isExpired = ConfigManager.isModelCacheExpired(type);
+                final hasCache = _fetchedModels[type] != null && _fetchedModels[type]!.isNotEmpty;
+                if (!hasCache || isExpired) {
+                  _fetchModels(type);
+                }
+              }
+            },
+            dense: true,
+            leading: Icon(
+              type == 'gemini'
+                  ? Icons.assistant
+                  : type == 'groq'
+                      ? Icons.bolt_rounded
+                      : type == 'nvidia'
+                          ? Icons.developer_board_rounded
+                          : type == 'openrouter'
+                              ? Icons.route_rounded
+                              : Icons.dns_rounded,
+              color: hasKey ? color : Colors.white38,
+              size: 16,
+            ),
+            title: Text(
+              _providerDisplayName(type),
+              style: TextStyle(
+                color: hasKey ? Colors.white : Colors.white38,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                fontFamily: 'monospace',
+              ),
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (hasKey)
+                  Container(
+                    width: 6, height: 6,
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: DivinePalette.matrixGreen,
+                    ),
+                  ),
+                const SizedBox(width: 8),
+                Icon(
+                  expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                  color: Colors.white38,
+                  size: 16,
+                ),
+              ],
+            ),
+          ),
+          
+          if (expanded) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Divider(color: Colors.white12, height: 1),
+                  const SizedBox(height: 12),
+                  
+                  // Custom API URL (Ollama or generic proxy endpoints)
+                  if (type == 'ollama' || type == 'custom') ...[
+                    _buildTextField(
+                      controller: _urlControllers[type]!,
+                      label: 'Base Endpoint URL',
+                      hint: type == 'ollama' ? 'http://localhost:11434' : 'https://api.openai.com/v1',
+                      icon: Icons.link_rounded,
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+
+                  // API Key Field (if not local Ollama without auth)
+                  if (type != 'ollama') ...[
+                    _buildTextField(
+                      controller: _apiKeyControllers[type]!,
+                      label: 'API Key Secret',
+                      hint: 'Enter your API key',
+                      icon: Icons.vpn_key_rounded,
+                      obfuscate: _obfuscateKeys[type]!,
+                      onToggleObfuscate: () {
+                        setState(() {
+                          _obfuscateKeys[type] = !_obfuscateKeys[type]!;
+                        });
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+
+                  // Model Name Field
+                  _buildTextField(
+                    controller: _modelControllers[type]!,
+                    label: 'Default Model Name',
+                    hint: _defaultModelForType(type),
+                    icon: Icons.psychology_rounded,
+                    onTapDropdown: () => _showModelSelectorBottomSheet(type),
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Context Limit Override Field
+                  _buildTextField(
+                    controller: _limitControllers[type]!,
+                    label: 'Context Limit Override (Optional)',
+                    hint: 'Auto-detect Limit (or Select from list)',
+                    icon: Icons.compress_rounded,
+                    onTapDropdown: () => _showLimitSelectorBottomSheet(type),
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    '🔱 Note: Set the full model context window. The agent automatically keeps active history capped strictly below 70% (60% on local RAM guard) to leave a safe 30%+ headroom for output tokens and tool schemas.',
+                    style: TextStyle(color: Colors.white24, fontSize: 8.5, height: 1.3),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTextField({
+    required TextEditingController controller,
+    required String label,
+    required String hint,
+    required IconData icon,
+    bool obfuscate = false,
+    VoidCallback? onToggleObfuscate,
+    List<String>? dropdownOptions,
+    VoidCallback? onTapDropdown,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label.toUpperCase(),
+          style: const TextStyle(
+            color: Colors.white38,
+            fontSize: 9,
+            fontFamily: 'monospace',
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 6),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          decoration: BoxDecoration(
+            color: Colors.white.withAlpha(6),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.white.withAlpha(10)),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, color: Colors.white38, size: 14),
+              const SizedBox(width: 10),
+              Expanded(
+                child: TextField(
+                  controller: controller,
+                  obscureText: obfuscate,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12.5,
+                    fontFamily: 'monospace',
+                  ),
+                  decoration: InputDecoration(
+                    border: InputBorder.none,
+                    isDense: true,
+                    hintText: hint,
+                    hintStyle: const TextStyle(color: Colors.white24, fontSize: 12.5),
+                    contentPadding: const EdgeInsets.symmetric(vertical: 10),
+                  ),
+                ),
+              ),
+              if (onToggleObfuscate != null)
+                GestureDetector(
+                  onTap: onToggleObfuscate,
+                  child: Icon(
+                    obfuscate ? Icons.visibility_off : Icons.visibility,
+                    color: Colors.white38,
+                    size: 14,
+                  ),
+                ),
+              if (onTapDropdown != null) ...[
+                if (onToggleObfuscate != null) const SizedBox(width: 8),
+                GestureDetector(
+                  onTap: onTapDropdown,
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                    child: Icon(Icons.arrow_drop_down, color: Colors.white38, size: 20),
+                  ),
+                ),
+              ] else if (dropdownOptions != null && dropdownOptions.isNotEmpty) ...[
+                if (onToggleObfuscate != null) const SizedBox(width: 8),
+                PopupMenuButton<String>(
+                  icon: const Icon(Icons.arrow_drop_down, color: Colors.white38, size: 20),
+                  color: const Color(0xFF1A1D24),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    side: BorderSide(color: Colors.white.withAlpha(20)),
+                  ),
+                  onSelected: (String val) {
+                    controller.text = val;
+                    setState(() {});
+                  },
+                  itemBuilder: (BuildContext context) {
+                    return dropdownOptions.map((String choice) {
+                      return PopupMenuItem<String>(
+                        value: choice,
+                        child: Text(
+                          choice,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      );
+                    }).toList();
+                  },
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _sectionLabel(String label) {
+    return Text(
+      label,
+      style: const TextStyle(
+        color: Colors.white38,
+        fontSize: 9,
+        fontFamily: 'monospace',
+        letterSpacing: 1.5,
+        fontWeight: FontWeight.bold,
+      ),
+    );
+  }
+}
+

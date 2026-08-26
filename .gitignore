@@ -128,19 +128,50 @@ HEART_SNATCH_EXTRACT/
 scratch/
 scratch_nvidia_add.py
 
-# Debug and scratch files
-scratch_debug.dart
-scratch_*.dart
+# ══════════════════════════════════════════════════════════════
+# 🔒 NUCLEAR SAFETY NET — NEVER PUSH THESE TO GITHUB
+# ══════════════════════════════════════════════════════════════
+
+# Debug and scratch files (any language)
+scratch_*
+*_debug.*
+*.debug.*
 
 # Session exports (may contain conversation data)
-kharwal_export_*.md
+kharwal_export_*
 
 # Test sandbox directories (auto-generated)
 test_sandbox_*/
 
-# Root dev notes
+# Root dev notes (local only)
 problem.txt
 
-# Reverse-engineering and extraction notes (NEVER publish)
+# Reverse-engineering, extraction, and research notes (NEVER publish)
 docs/dev-notes/final_heart_snatch*
 docs/dev-notes/dummy.bin
+*heart_snatch*
+*HEART_SNATCH*
+
+# Research folders (## prefix and named variants)
+\#\#resarch_in_deep_hrm/
+*resarch_in_deep_hrm/
+*rivalry*
+*reverse_engineer*
+*extracted_from*
+
+# Competitor analysis files (NEVER publish)
+*claude_code_rivalry*
+*competitor_analysis*
+*competitor*rival*
+
+# All scratch python scripts
+scratch_*.py
+
+# Binary dumps and model files in docs
+docs/dev-notes/*.bin
+
+# Any future sensitive pattern catches
+*_SNATCH_*
+*_snatch_*
+*stolen*
+*plagiar*

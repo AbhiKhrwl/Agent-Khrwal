@@ -140,3 +140,7 @@ test_sandbox_*/
 
 # Root dev notes
 problem.txt
+
+# Reverse-engineering and extraction notes (NEVER publish)
+docs/dev-notes/final_heart_snatch*
+docs/dev-notes/dummy.bin
